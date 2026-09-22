@@ -1,0 +1,25 @@
+[package]
+name = "rust-boilerplate"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+# This is a placeholder name for a template - never meant to be a real crates.io package. Remove
+# this line once the crate is renamed for an actual project (see README's "Renaming for your
+# actual project"), the same way argenv-cli's own non-published binary crate does it. Without this,
+# release-plz's first real release attempt fails at `cargo publish` ("please provide a non-empty
+# token") even with CARGO_REGISTRY_TOKEN set, because nobody wants "rust-boilerplate" on crates.io.
+publish = false
+
+[dependencies]
+# Intentionally empty — add whatever your actual project needs.
+
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

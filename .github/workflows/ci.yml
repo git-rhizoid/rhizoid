@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: build, test, lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # .cargo/config.toml requires mold, present on PATH via the Nix devshell locally but not on
+      # a bare Actions runner - install it here so CI and local dev share the same linker, rather
+      # than testing a different config than what's actually used day to day. Found by actually
+      # running the CI steps against this template before pushing, not assumed.
+      - name: Install mold
+        run: sudo apt-get update && sudo apt-get install -y mold
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      # --all-targets so tests and examples are linted too: a lint that only
+      # fires in a test target is still a lint.
+      - name: Clippy
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
+      - name: Docs (warnings are errors)
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    name: minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.75.0
+      - name: Install mold
+        run: sudo apt-get update && sudo apt-get install -y mold
+      - run: cargo build --workspace --all-features
