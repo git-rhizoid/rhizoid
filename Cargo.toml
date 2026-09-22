@@ -1,18 +1,14 @@
 [package]
-name = "rust-boilerplate"
+name = "rhizoid"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
-# This is a placeholder name for a template - never meant to be a real crates.io package. Remove
-# this line once the crate is renamed for an actual project (see README's "Renaming for your
-# actual project"), the same way argenv-cli's own non-published binary crate does it. Without this,
-# release-plz's first real release attempt fails at `cargo publish` ("please provide a non-empty
-# token") even with CARGO_REGISTRY_TOKEN set, because nobody wants "rust-boilerplate" on crates.io.
-publish = false
+description = "Fork, own, and sync git dependencies (rhizoid-cuttings) instead of relying on a package manager."
+repository = "https://github.com/git-rhizoid/rhizoid"
 
 [dependencies]
-# Intentionally empty — add whatever your actual project needs.
+# Intentionally empty — add whatever the project actually needs.
 
 [profile.dev]
 debug = 1

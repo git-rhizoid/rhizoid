@@ -1,5 +1,5 @@
 fn main() {
-    println!("rust-boilerplate: replace me.");
+    println!("rhizoid: not implemented yet.");
 }
 
 #[cfg(test)]

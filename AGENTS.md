@@ -1,17 +1,16 @@
-# AGENTS.md - how to work in a repo generated from this template
+# AGENTS.md - how to work in rhizoid
 
-This is a Rust project scaffolded from [grenudi/rustnix](https://github.com/grenudi/rustnix):
-a Nix + direnv devenv (isolated VSCodium, pinned toolchain - see `README.md`) plus CI, release
-automation, and a test convention, all wired up from the first commit.
+Fork, own, and sync git dependencies instead of relying on a package manager - see the README for
+what that means and [`git-rhizoid/git-rhizoid.github.io`](https://github.com/git-rhizoid/git-rhizoid.github.io)
+for the design log. Scaffolded from [grenudi/rustnix](https://github.com/grenudi/rustnix): a Nix +
+direnv devenv (isolated VSCodium, pinned toolchain - see `README.md`) plus CI, release automation,
+and a test convention, all wired up from the first commit.
 
 ## Setup (once per session)
 ```
 ./init_devenv.sh   # trusts .envrc and loads the Nix devshell; see README.md
 cargo test --workspace --all-features
 ```
-If `Cargo.toml` still says `name = "rust-boilerplate"`, this repo hasn't been renamed for its
-actual project yet - see the README's "Renaming for your actual project" section before writing
-real code.
 
 ## Conventions
 1. **Conventional Commits on the PR title**, not necessarily every commit inside it - `pr-title.yml`
@@ -39,10 +38,8 @@ real code.
 Every push to `main` updates one open release PR (version bump + changelog). Merging it cuts the
 release (git tag + GitHub Release) and, once `CARGO_REGISTRY_TOKEN` is set as a repo secret,
 publishes to crates.io. Nothing else triggers a release - no manual tagging, no separate publish
-step. Until `Cargo.toml`'s `publish = false` is removed (see README's "Renaming for your actual
-project"), the crates.io publish step is skipped outright - found for real: the first release
-attempt on this template failed with "please provide a non-empty token" before this line existed,
-because a boilerplate placeholder crate has no business on crates.io regardless of a token.
+step. `Cargo.toml` has no `publish = false` here (unlike the rustnix template this was generated
+from) - this crate is meant to actually publish once there's something worth releasing.
 
 ## Why it's built this way
 This template exists so a new project's *process* (CI, releases, test layout) doesn't need to be

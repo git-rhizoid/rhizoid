@@ -1,11 +1,17 @@
-# rust-boilerplate
+# rhizoid
 
-Clone it, rename it, start writing Rust. Pure vanilla Nix (no flakes,
-no `experimental-features`) + direnv gives you a full toolchain and an
-**isolated VSCodium** — pre-configured Rust IDE, zero manual extension
-installs — automatically, every time you `cd` into the directory.
+Fork, own, and sync git dependencies instead of relying on a package manager. Each dependency
+becomes a real, independently-owned GitHub fork (a **rhizoid-cutting**, or **rhizcut** for short) -
+pinned, patchable without waiting on an upstream PR, and able to send clean patches back upstream
+when you want to. See [`git-rhizoid/git-rhizoid.github.io`](https://github.com/git-rhizoid/git-rhizoid.github.io)
+for the design log and current status.
 
-<img width="1920" height="1080" alt="rustnix" src="https://github.com/user-attachments/assets/4080efb1-3f66-47ff-aab5-83644a813777" />
+**Status: not implemented yet.** This repo currently holds the devenv and CI/release scaffolding
+(from [rustnix](https://github.com/grenudi/rustnix)) and nothing else.
+
+The rest of this README documents the devenv this project is built with - Nix + direnv giving a
+full Rust toolchain and an isolated, pre-configured VSCodium automatically, every time you `cd`
+into the directory.
 
 ## Get started
 
@@ -27,44 +33,12 @@ into this directory (in any terminal, forever, no re-running anything):
 isolated instance) are just... on PATH. Leave the directory and they're
 gone again — nothing leaks into your global environment.
 
-## Renaming for your actual project
-
-Three things to change after cloning — nothing else references the
-template name:
-
-```
-Cargo.toml   → [package] name = "..."
-Cargo.toml   → remove the `publish = false` line once this is a real crate you intend to publish
-directory    → rename the folder itself, or `git clone ... <new-name>`
-```
-
-`publish = false` is there so release-plz's first real release doesn't try to push a
-crate named `rust-boilerplate` to crates.io - it's what stops `cargo publish`
-outright, with a clear reason, instead of failing on a missing token.
-
-## Use this template
-
-This repo is a GitHub template - "Use this template" (or `gh repo create --template grenudi/rustnix`)
-gives you a fresh repo with the same devenv plus CI, release automation, and a test scaffold
-already wired up, not just the Nix/VSCodium half. See [`AGENTS.md`](AGENTS.md) for the day-to-day
-conventions and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the commit/PR format.
-
 ## CI, releases, and tests
 
-- **CI** (`.github/workflows/ci.yml`): format check, clippy (`--all-targets`, warnings as errors),
-  `cargo test --workspace --all-features`, `cargo doc` with warnings as errors, and an MSRV job
-  pinned to the `rust-version` already set in `Cargo.toml` (1.75.0). Mirrors
-  [argenv](https://github.com/argenv-opencommons/argenv)'s CI, minus its project-specific jobs.
-- **Releases** (`.github/workflows/release-plz.yml`): [release-plz](https://release-plz.dev/) opens
-  and maintains a release PR (version bump + changelog, via `cliff.toml`) on every push to `main`;
-  merging it cuts a release. Needs a `CARGO_REGISTRY_TOKEN` repo secret before it can actually
-  `cargo publish` - without it, the PR/changelog maintenance still works correctly, only the
-  publish step at the end of a merged release needs it.
-- **PR titles** (`.github/workflows/pr-title.yml`): linted against Conventional Commits, since
-  release-plz reads the squash-merged commit (the PR title) to decide the version bump and
-  changelog entry - not every individual commit inside the PR.
-- **Tests** (`tests/`): one file per concern (see `tests/sanity.rs`), matching argenv's
-  `crates/argenv/tests/*.rs` layout, rather than one large `tests.rs`.
+Inherited from [rustnix](https://github.com/grenudi/rustnix), which this repo was generated from -
+see that template's own README/AGENTS.md for the full rationale. In short: PR titles are linted as
+Conventional Commits, `release-plz` maintains a release PR (changelog + version bump) on every push
+to `main`, and tests live under `tests/`, one file per concern.
 
 ## No `dev` command
 
