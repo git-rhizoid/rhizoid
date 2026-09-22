@@ -6,6 +6,12 @@ rust-version = "1.75"
 license = "MIT"
 description = "Fork, own, and sync git dependencies (rhizoid-cuttings) instead of relying on a package manager."
 repository = "https://github.com/git-rhizoid/rhizoid"
+# There is nothing implemented yet (see src/main.rs) - publishing an empty v0.1.0 to crates.io,
+# a registry with no true delete (only yank), would be premature. Remove this once there is real
+# functionality worth releasing. Confirmed by letting a real release attempt run: without this,
+# release-plz correctly tries to publish and fails on a missing CARGO_REGISTRY_TOKEN - the right
+# fix isn't adding the token, it's not being ready to publish yet.
+publish = false
 
 [dependencies]
 # Intentionally empty — add whatever the project actually needs.

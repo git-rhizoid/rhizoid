@@ -38,8 +38,10 @@ cargo test --workspace --all-features
 Every push to `main` updates one open release PR (version bump + changelog). Merging it cuts the
 release (git tag + GitHub Release) and, once `CARGO_REGISTRY_TOKEN` is set as a repo secret,
 publishes to crates.io. Nothing else triggers a release - no manual tagging, no separate publish
-step. `Cargo.toml` has no `publish = false` here (unlike the rustnix template this was generated
-from) - this crate is meant to actually publish once there's something worth releasing.
+step. `Cargo.toml` still has `publish = false`, same as the rustnix template this was generated
+from - there's no real functionality yet (see `src/main.rs`), so there's nothing worth publishing.
+Remove it once that changes; a real release attempt confirmed the alternative (leaving it off with
+no `CARGO_REGISTRY_TOKEN` set) just fails release-plz on every push instead.
 
 ## Why it's built this way
 This template exists so a new project's *process* (CI, releases, test layout) doesn't need to be
