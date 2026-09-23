@@ -1,27 +1,18 @@
-[package]
-name = "rhizoid"
+[workspace]
+resolver = "2"
+members = ["crates/rhizoid-core", "crates/rhizoid-cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
-description = "Fork, own, and sync git dependencies (rhizoid-cuttings) instead of relying on a package manager."
 repository = "https://github.com/git-rhizoid/rhizoid"
-# There is nothing implemented yet (see src/main.rs) - publishing an empty v0.1.0 to crates.io,
-# a registry with no true delete (only yank), would be premature. Remove this once there is real
-# functionality worth releasing. Confirmed by letting a real release attempt run: without this,
-# release-plz correctly tries to publish and fails on a missing CARGO_REGISTRY_TOKEN - the right
-# fix isn't adding the token, it's not being ready to publish yet.
-publish = false
+authors = ["git-rhizoid"]
 
-[dependencies]
-# Intentionally empty — add whatever the project actually needs.
-
-[profile.dev]
-debug = 1
-split-debuginfo = "unpacked"
-
-[profile.release]
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
+[workspace.dependencies]
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = "1.0.128"
+schemars = "0.8.21"
+toml = "0.8.19"
+argenv = { version = "0.1", features = ["contract"] }
