@@ -4,9 +4,9 @@ version = 3
 
 [[package]]
 name = "argenv"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7343faecb34bb5e9347637e8313a6ae4de7c70cfe77c8f21918068e1bdedc12"
+checksum = "5890cd08fd9993d8de245ba4730b2ef1ad246f8032ba972a794abdb987286ad9"
 dependencies = [
  "schemars",
  "serde",
