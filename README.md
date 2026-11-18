@@ -6,8 +6,31 @@ pinned, patchable without waiting on an upstream PR, and able to send clean patc
 when you want to. See [`git-rhizoid/git-rhizoid.github.io`](https://github.com/git-rhizoid/git-rhizoid.github.io)
 for the design log and current status.
 
-**Status: not implemented yet.** This repo currently holds the devenv and CI/release scaffolding
-(from [rustnix](https://github.com/grenudi/rustnix)) and nothing else.
+**Status: `rhizoid status` works** - the first step of the follow tool for every edge a repository has
+(a slice, a tool pin, a fork); `add`, `import`, `update` and `refresh` wait for the GitHub adapter. The rest
+of the repo is the devenv and CI/release scaffolding (from [rustnix](https://github.com/grenudi/rustnix)).
+
+## rhizoid status
+
+```
+rhizoid status [--graph FILE] [--root DIR] [--fetch] [--json]
+```
+
+One read-only report over the edges a graph file names (`examples/linux-phone-oco.graph.toml` is one): which
+repositories follow which source, and what a source's tags look like. Each follower's own pin files, read at
+`origin/main` of its clone under `--root` (`~/Projects`), say the rest. Every check is `current`, `behind` or
+`moved-by-hand`, and how; it ends 0 when nothing is drift, 1 when something is, 2 when a clone or remote could not be
+read. `tests/agree-with-graph-drift.sh` runs it against the shell it replaces, `graph-drift.sh` of
+`linux-phone-oco/docs`, on the real graph and compares them edge by edge.
+
+It reads the clones as they are (`--fetch` brings their tags and branches up to date first), and pin files as TOML, not
+as lines. Where it answers differently from the shell on purpose: a file named in `own` that neither side has is
+`behind` (a typo), a pin that names a release its source never made is `behind`, a fork ahead of its upstream is
+`moved-by-hand` and not behind, a pin file that is not what it should be stops the report. The old `status`, which
+listed the modules of `rhizoid.toml` and said drift was unknown, is gone: a cutting returns as an edge of the graph
+when cuttings are built (step 4 of the order).
+
+Install at a release: `cargo install --git https://github.com/git-rhizoid/rhizoid --tag vX.Y.Z rhizoid-cli`.
 
 The rest of this README documents the devenv this project is built with - Nix + direnv giving a
 full Rust toolchain and an isolated, pre-configured VSCodium automatically, every time you `cd`

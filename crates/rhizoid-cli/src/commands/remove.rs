@@ -4,19 +4,7 @@
 //! stops Rhizoid tracking it. Needs no GitHubPort adapter, so unlike most of
 //! its siblings this one is fully implemented already.
 
-use argenv::*;
 use rhizoid_core::Manifest;
-
-pub struct Model;
-impl Model {
-    pub fn records() -> Vec<Record> {
-        vec![]
-    }
-
-    pub fn problems() -> Vec<String> {
-        vec![]
-    }
-}
 
 pub fn remove_from(manifest: &mut Manifest, name: &str) -> Result<(), String> {
     let before = manifest.modules.len();
@@ -51,11 +39,6 @@ mod tests {
                 origin: ModuleOrigin::Created,
             }],
         }
-    }
-
-    #[test]
-    fn model_satisfies_argenvs_own_rules() {
-        assert!(Model::problems().is_empty());
     }
 
     #[test]

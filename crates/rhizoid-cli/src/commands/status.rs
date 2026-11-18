@@ -1,96 +1,121 @@
-//! `rhizoid status` - report drift between the manifest and real state.
+//! `rhizoid status` - every edge of a repository graph against what its source gives, read-only.
 //!
-//! What this can honestly report without the GitHubPort adapter: whether the
-//! manifest exists and parses, and how many modules it declares. Whether
-//! each module's fork actually exists, and whether its tracking branch is
-//! ahead/behind, needs the adapter - see `rhizoid-core::ports`.
+//! The graph file names the edges; each follower's own pin files, read at the graph's revision of its clone,
+//! say what it follows. Each check is `current`, `behind` or `moved-by-hand`, and how. It ends 0 when nothing
+//! is drift, 1 when something is, 2 when the world could not be read.
 
-use argenv::*;
-use rhizoid_core::Manifest;
+use crate::git_repos::GitRepos;
+use rhizoid_core::{drift_count, status, summary, Finding, Graph};
+use std::path::{Path, PathBuf};
 
-pub struct Model;
-impl Model {
-    pub const JSON: Input<bool> = Input {
-        key: "json",
-        ty: Type::Bool,
-        default: Some(false),
-        arg: Some(Arg::long("json")),
-        summary: "Machine-readable output",
-        example: "--json",
-        ..Input::EMPTY
-    };
+/// The graph file read when none is named.
+pub const GRAPH_FILE: &str = "rhizoid.graph.toml";
 
-    pub fn records() -> Vec<Record> {
-        vec![Model::JSON.to_record()]
-    }
+/// What status was asked, with every default already decided.
+pub struct Ask {
+    pub graph: PathBuf,
+    pub root: PathBuf,
+    pub fetch: bool,
+    pub json: bool,
+}
 
-    pub fn problems() -> Vec<String> {
-        Model::JSON.check()
+/// The folder the clones are under when none is named: `~/Projects`.
+pub fn default_root(home: Option<&str>) -> Result<PathBuf, String> {
+    match home {
+        Some(h) if !h.is_empty() => Ok(Path::new(h).join("Projects")),
+        _ => Err("no --root, no RHIZOID_ROOT and no HOME to find ~/Projects from".to_string()),
     }
 }
 
-pub struct Report {
-    pub module_count: usize,
-    pub module_names: Vec<String>,
-}
-
-pub fn build_report(manifest: &Manifest) -> Report {
-    Report {
-        module_count: manifest.modules.len(),
-        module_names: manifest.modules.iter().map(|m| m.name.clone()).collect(),
+/// The report: a line per finding and a summary, or the findings as JSON.
+pub fn render(findings: &[Finding], json: bool) -> String {
+    if json {
+        return serde_json::to_string_pretty(findings).expect("findings serialise") + "\n";
     }
+    let mut out = String::new();
+    for f in findings {
+        out.push_str(&f.to_string());
+        out.push('\n');
+    }
+    out.push_str(&summary(findings));
+    out.push('\n');
+    out
 }
 
-pub fn run(manifest: &Manifest, resolved: &Resolution) {
-    let report = build_report(manifest);
-    if Model::JSON.get_from_or_default(resolved).unwrap_or(false) {
-        println!(
-            "{}",
-            serde_json::json!({
-                "module_count": report.module_count,
-                "modules": report.module_names,
-                "drift": "unknown - GitHubPort adapter not implemented yet",
-            })
-        );
-    } else {
-        println!("{} module(s) declared:", report.module_count);
-        for name in &report.module_names {
-            println!("  {name}  (drift: unknown - GitHubPort adapter not implemented yet)");
+/// Print the report; whether anything was drift.
+pub fn run(ask: &Ask) -> Result<bool, String> {
+    let text = std::fs::read_to_string(&ask.graph)
+        .map_err(|e| format!("cannot read the graph file {}: {e}", ask.graph.display()))?;
+    let graph = Graph::parse(&text).map_err(|e| format!("{}: {e}", ask.graph.display()))?;
+    let repos = GitRepos::new(&ask.root, &graph, ask.fetch);
+    let findings = status(&graph, &repos).map_err(|e| e.to_string())?;
+    write_report(&mut std::io::stdout().lock(), &render(&findings, ask.json))?;
+    Ok(drift_count(&findings) > 0)
+}
+
+/// Write the report. A reader that went away (`rhizoid status | head`) is not an error of the report.
+pub fn write_report(out: &mut impl std::io::Write, report: &str) -> Result<(), String> {
+    match out.write_all(report.as_bytes()).and_then(|()| out.flush()) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
+            Err(format!("cannot write the report: {e}"))
         }
+        _ => Ok(()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rhizoid_core::{Defaults, ModuleEntry, ModuleOrigin};
+    use rhizoid_core::{Check, Verdict};
 
-    #[test]
-    fn model_satisfies_argenvs_own_rules() {
-        assert!(Model::problems().is_empty());
+    fn finding(verdict: Verdict) -> Finding {
+        Finding {
+            follower: "a/b".into(),
+            source: "c/d".into(),
+            check: Check::ToolPin,
+            verdict,
+            carried_by: None,
+            detail: "tad 0.7.1".into(),
+        }
     }
 
     #[test]
-    fn report_counts_and_names_modules() {
-        let m = Manifest {
-            defaults: Defaults::default(),
-            modules: vec![ModuleEntry {
-                name: "example".to_string(),
-                source: "octocat/example".to_string(),
-                org: None,
-                tracked_ref: None,
-                origin: ModuleOrigin::Created,
-            }],
-        };
-        let report = build_report(&m);
-        assert_eq!(report.module_count, 1);
-        assert_eq!(report.module_names, vec!["example".to_string()]);
+    fn the_text_report_is_a_line_per_finding_then_the_summary() {
+        let r = render(&[finding(Verdict::Current), finding(Verdict::Behind)], false);
+        let lines: Vec<&str> = r.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("current") && lines[1].starts_with("behind"));
+        assert!(lines[2].contains("1 drift"));
     }
 
     #[test]
-    fn report_on_an_empty_manifest_is_empty_not_an_error() {
-        let m = Manifest { defaults: Defaults::default(), modules: vec![] };
-        let report = build_report(&m);
-        assert_eq!(report.module_count, 0);
+    fn the_json_report_is_the_findings() {
+        let r = render(&[finding(Verdict::Behind)], true);
+        let v: serde_json::Value = serde_json::from_str(&r).unwrap();
+        assert_eq!(v[0]["follower"], "a/b");
+        assert_eq!(v[0]["verdict"], "behind");
+    }
+
+    struct Closed(std::io::ErrorKind);
+    impl std::io::Write for Closed {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(self.0.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_reader_that_went_away_is_no_error_and_a_full_disk_is() {
+        assert!(write_report(&mut Closed(std::io::ErrorKind::BrokenPipe), "x").is_ok());
+        assert!(write_report(&mut Closed(std::io::ErrorKind::PermissionDenied), "x").is_err());
+    }
+
+    #[test]
+    fn the_root_is_projects_under_home() {
+        assert_eq!(default_root(Some("/home/x")).unwrap(), PathBuf::from("/home/x/Projects"));
+        assert!(default_root(None).is_err());
+        assert!(default_root(Some("")).is_err());
     }
 }
