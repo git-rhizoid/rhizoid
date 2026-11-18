@@ -1,0 +1,74 @@
+# rhizoid.graph.toml - the edges of one repository graph, for `rhizoid status`: what the followers' own pin files
+# cannot say (which repositories follow which source, and what a source tag looks like). This one is
+# linux-phone-oco's, the graph docs' research base-graph-measured walked; `rhizoid status` over it agrees with that
+# research's graph-drift.sh, edge by edge (tests/agree-with-graph-drift.sh). A name is `owner/repo`; its clone is
+# ROOT/owner/repo unless [clones] says where.
+
+# the revision each clone is read at
+rev = "origin/main"
+
+[clones]
+"grenudi/lab-machine" = "lab-machine"
+
+# idealkb -> the bases that follow it: each pins a release, keeps some files as its own, and keeps the source's marked
+# part of tables.toml between idealkb:begin and idealkb:end
+[[slice]]
+source = "grenudi/ideal-knowledge-base"
+pin = "idealkb.toml"
+tag_prefix = "v"
+marker = "idealkb"
+followers = [
+  "linux-phone-oco/docs",
+  "linux-phone-oco/device-template",
+  "linux-phone-oco/surya-lab",
+  "linux-phone-oco/google-walleye-lab",
+]
+
+# the device layer: docs gives it (device-layer/tables.toml, between device:begin and device:end) and reads its contract;
+# each device base pins it by a release of docs, and carries the marked part as that release gave it
+[[layer]]
+pin = "devicebase.toml"
+default_source = "linux-phone-oco/device-template"
+owner = "linux-phone-oco/docs"
+part = "device-layer/tables.toml"
+marker = "device"
+tag_prefix = "v"
+followers = [
+  "linux-phone-oco/surya-lab",
+  "linux-phone-oco/google-walleye-lab",
+  "linux-phone-oco/device-template",
+]
+
+# a tool pinned at a release of its source: a key of a TOML file, or a line of a script
+[[tool]]
+name = "lpoco"
+source = "linux-phone-oco/lab-tools"
+tag_prefix = "lpoco-v"
+pin = "lab.toml"
+key = "tools.lpoco"
+followers = ["grenudi/lab-machine"]
+
+[[tool]]
+name = "tad"
+source = "creation-guidelines/tad-engine"
+tag_prefix = "tad-v"
+pin = "bin/install-tad.sh"
+line = 'version="${TAD_VERSION:-{version}}"'
+listed_in = { repo = "creation-guidelines/tad-engine", file = "consumers" }
+followers = [
+  "linux-phone-oco/docs",
+  "linux-phone-oco/device-template",
+  "linux-phone-oco/surya-lab",
+  "linux-phone-oco/google-walleye-lab",
+]
+
+# a fork: its tracking branch is its upstream's head (no branch: the remote's HEAD)
+[[fork]]
+fork = "grenudi/sxmo-utils"
+branch = "master"
+upstream = "https://git.sr.ht/~mil/sxmo-utils"
+upstream_branch = "master"
+
+[[fork]]
+fork = "grenudi/linux"
+upstream = "sm7150-mainline/linux"

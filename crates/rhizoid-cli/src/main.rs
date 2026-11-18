@@ -1,162 +1,187 @@
 //! `rhizoid` - fork, own, and sync git dependencies instead of relying on a
-//! package manager.
+//! package manager. The invocation surface is declared once, in `cli.rs`
+//! (argenv); this file reads it and runs the command.
 //!
-//! ```text
-//! rhizoid init [--org ORG] [--force]
-//! rhizoid add <owner/repo> [--org ORG] [--as NAME] [--tracked-ref REF]
-//! rhizoid import <owner/repo> [--as NAME] [--tracked-ref REF]
-//! rhizoid update [module]
-//! rhizoid status [--json]
-//! rhizoid refresh [module]
-//! rhizoid remove <module>
-//! ```
-//!
-//! Subcommand dispatch is a plain match on the first argument, matching
-//! argenv-cli's own reference pattern - see `commands` module docs for why
-//! that, and each command's leading positional, are hand-parsed rather than
-//! declared through argenv.
+//! Exit status: 0 done; 1 `status` found drift or a command failed; 2 the
+//! invocation is wrong or `status` could not read the world.
 
+mod cli;
 mod commands;
+mod git_repos;
 mod manifest_io;
 
-use argenv::{lint, Invocation, ProcessEnv};
+use argenv_resolve::generate::{self, Program, Shell};
+use argenv_resolve::{lint, InputResolveExt, LintPolicy, Resolution, Severity};
+use cli::{Command, Contract};
+use commands::status::Ask;
+use commands::unbuilt::Verb;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let dir = std::env::current_dir().expect("current directory is readable");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const MAN_DATE: &str = "2026-11-18";
+const ABOUT: &str = "Fork, own and sync git dependencies, and report every edge of a repository graph (rhizoid status)";
 
-    match args.first().map(String::as_str) {
-        Some("init") => run_flags_only(
-            "init",
-            &args[1..],
-            commands::init::Model::records(),
-            commands::init::Model::problems(),
-            |resolved| commands::init::run(&dir, resolved),
-        ),
-        Some("add") => run_with_required_positional(
-            "add",
-            &args[1..],
-            "source",
-            commands::add::Model::records(),
-            commands::add::Model::problems(),
-            commands::add::run,
-        ),
-        Some("import") => run_with_required_positional(
-            "import",
-            &args[1..],
-            "fork",
-            commands::import::Model::records(),
-            commands::import::Model::problems(),
-            commands::import::run,
-        ),
-        Some("update") => run_with_optional_positional(
-            "update",
-            &args[1..],
-            commands::update::Model::records(),
-            commands::update::Model::problems(),
-            commands::update::run,
-        ),
-        Some("refresh") => run_with_optional_positional(
-            "refresh",
-            &args[1..],
-            commands::refresh::Model::records(),
-            commands::refresh::Model::problems(),
-            commands::refresh::run,
-        ),
-        Some("remove") => run_with_required_positional(
-            "remove",
-            &args[1..],
-            "module",
-            commands::remove::Model::records(),
-            commands::remove::Model::problems(),
-            |name, _resolved| commands::remove::run(&dir, name),
-        ),
-        Some("status") => {
-            check_model("status", commands::status::Model::problems());
-            let manifest = match manifest_io::load(&dir) {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("rhizoid: {e}");
-                    return ExitCode::FAILURE;
-                }
+const COMMANDS: &[generate::Command<'static>] = &[
+    generate::Command { name: "init", summary: "Write a fresh rhizoid.toml" },
+    generate::Command { name: "add", summary: "Fork a new module into the configured org" },
+    generate::Command { name: "import", summary: "Adopt an existing fork" },
+    generate::Command { name: "update", summary: "Pull upstream into a module's tracking branch" },
+    generate::Command { name: "refresh", summary: "Reconcile the manifest with what is observed" },
+    generate::Command { name: "remove", summary: "Drop a module from the manifest" },
+    generate::Command {
+        name: "status",
+        summary: "Every edge of a repository graph: current, behind or moved by hand, and how",
+    },
+    generate::Command { name: "completions", summary: "Shell completions for rhizoid" },
+    generate::Command { name: "man", summary: "The manual page, in roff" },
+];
+
+fn program() -> Program<'static> {
+    Program {
+        name: "rhizoid",
+        version: VERSION,
+        about: ABOUT,
+        commands: COMMANDS,
+        exit_status: &[
+            ("0", "done; for status, no edge is drift"),
+            ("1", "status found drift, or the command failed"),
+            ("2", "the invocation is wrong, or status could not read the repositories it was asked about"),
+        ],
+        see_also: &["git(1)", "gh(1)"],
+        date: MAN_DATE,
+        asked: &[],
+    }
+}
+
+/// Resolve argv and the environment; a finding that is an error ends the program with status 2.
+fn resolve() -> Resolution {
+    let records = Contract::records();
+    let resolved = argenv_resolve::parse(&records);
+    let findings = lint(&records, &resolved);
+    let policy = LintPolicy::default();
+    for f in &findings {
+        let label = if policy.severity(f) == Severity::Error { "error" } else { "warning" };
+        eprintln!("rhizoid: {label}: {f}");
+    }
+    if findings.iter().any(|f| policy.severity(f) == Severity::Error) {
+        std::process::exit(2);
+    }
+    resolved
+}
+
+/// What the person asked, parsed once: the command with everything it needs, already decided.
+enum Request {
+    Help,
+    Version,
+    Init { dir: PathBuf, org: Option<String>, force: bool },
+    Remove { dir: PathBuf, module: String },
+    Unbuilt { verb: Verb, target: Option<String> },
+    Status(Ask),
+    Completions(Shell),
+    Man,
+}
+
+fn current_dir() -> Result<PathBuf, String> {
+    std::env::current_dir().map_err(|e| format!("cannot read the current folder: {e}"))
+}
+
+/// The target a command needs, or the usage error that says which.
+fn required(target: Option<String>, what: &str) -> Result<String, String> {
+    target.ok_or_else(|| format!("missing <{what}>"))
+}
+
+fn request(r: &Resolution) -> Result<Request, String> {
+    if Contract::HELP.get_from(r).unwrap_or(false) {
+        return Ok(Request::Help);
+    }
+    if Contract::VERSION.get_from(r).unwrap_or(false) {
+        return Ok(Request::Version);
+    }
+    let Some(command) = Contract::COMMAND.get_from(r) else {
+        return Ok(Request::Help);
+    };
+    let target = Contract::TARGET.get_from(r);
+    Ok(match command {
+        Command::Init => Request::Init {
+            dir: current_dir()?,
+            org: Contract::ORG.get_from(r).filter(|s| !s.is_empty()),
+            force: Contract::FORCE.get_from(r).unwrap_or(false),
+        },
+        Command::Remove => {
+            Request::Remove { dir: current_dir()?, module: required(target, "module")? }
+        }
+        Command::Add => {
+            Request::Unbuilt { verb: Verb::Add, target: Some(required(target, "source")?) }
+        }
+        Command::Import => {
+            Request::Unbuilt { verb: Verb::Import, target: Some(required(target, "fork")?) }
+        }
+        Command::Update => Request::Unbuilt { verb: Verb::Update, target },
+        Command::Refresh => Request::Unbuilt { verb: Verb::Refresh, target },
+        Command::Status => {
+            let root = match Contract::ROOT.get_from(r).filter(|s| !s.is_empty()) {
+                Some(root) => root.into(),
+                None => commands::status::default_root(Contract::HOME.get_from(r).as_deref())?,
             };
-            let records = commands::status::Model::records();
-            let resolved = Invocation { args: &args[1..], env: &ProcessEnv }.resolve(&records);
-            report_findings(&records, &args[1..]);
-            commands::status::run(&manifest, &resolved);
-            ExitCode::SUCCESS
+            let graph = match Contract::GRAPH.get_from(r) {
+                Some(g) => g.into(),
+                None => current_dir()?.join(commands::status::GRAPH_FILE),
+            };
+            Request::Status(Ask {
+                graph,
+                root,
+                fetch: Contract::FETCH.get_from(r).unwrap_or(false),
+                json: Contract::JSON.get_from(r).unwrap_or(false),
+            })
         }
-        Some("--version") | Some("-V") => {
-            println!("rhizoid {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+        Command::Completions => {
+            let shell = Contract::SHELL.get_from(r).and_then(|s| Shell::parse(&s));
+            Request::Completions(
+                shell.ok_or("completions needs a shell: bash, zsh, fish or nushell")?,
+            )
         }
-        Some("--help") | Some("-h") | None => {
-            print_help();
-            ExitCode::SUCCESS
-        }
-        Some(other) => {
-            eprintln!("rhizoid: unknown command `{other}`");
-            print_help();
+        Command::Man => Request::Man,
+    })
+}
+
+fn main() -> ExitCode {
+    let resolved = resolve();
+    match request(&resolved) {
+        Err(e) => {
+            eprintln!("rhizoid: {e}");
             ExitCode::from(2)
         }
-    }
-}
-
-fn print_help() {
-    println!(
-        "rhizoid {}\n\
-         \n\
-         USAGE\n    \
-             rhizoid init [--org ORG] [--force]\n    \
-             rhizoid add <owner/repo> [--org ORG] [--as NAME] [--tracked-ref REF]\n    \
-             rhizoid import <owner/repo> [--as NAME] [--tracked-ref REF]\n    \
-             rhizoid update [module]\n    \
-             rhizoid status [--json]\n    \
-             rhizoid refresh [module]\n    \
-             rhizoid remove <module>\n    \
-             rhizoid --version | --help\n",
-        env!("CARGO_PKG_VERSION")
-    );
-}
-
-/// Check a command's own `Model::problems()` before resolving anything -
-/// catches a bad `Input` declaration (argenv's own contract self-check, see
-/// its `Input::check`) at the moment it would matter, not just in a test
-/// suite. Should never fire in practice; if it does, it is a bug in this
-/// binary, not in whatever the person typed.
-fn check_model(command: &str, problems: Vec<String>) {
-    if !problems.is_empty() {
-        eprintln!("rhizoid: internal error - `{command}`'s own declaration is invalid:");
-        for p in problems {
-            eprintln!("  {p}");
+        Ok(Request::Help) => {
+            print!("{}", cli::usage("rhizoid", ABOUT));
+            ExitCode::SUCCESS
         }
-        std::process::exit(70); // EX_SOFTWARE
+        Ok(Request::Version) => {
+            println!("rhizoid {VERSION}");
+            ExitCode::SUCCESS
+        }
+        Ok(Request::Init { dir, org, force }) => done(commands::init::run(&dir, org, force)),
+        Ok(Request::Remove { dir, module }) => done(commands::remove::run(&dir, &module)),
+        Ok(Request::Unbuilt { verb, target }) => {
+            done(commands::unbuilt::run(verb, target.as_deref()))
+        }
+        Ok(Request::Status(ask)) => match commands::status::run(&ask) {
+            Ok(false) => ExitCode::SUCCESS,
+            Ok(true) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("rhizoid: {e}");
+                ExitCode::from(2)
+            }
+        },
+        Ok(Request::Completions(sh)) => {
+            emit(generate::completions(sh, &program(), &Contract::records()))
+        }
+        Ok(Request::Man) => emit(generate::man_page(&program(), &Contract::records())),
     }
 }
 
-/// Print any lint findings (unknown flags, out-of-domain values) to stderr.
-/// A finding is a warning about the invocation, not by itself a reason to
-/// abort - argenv's own contract for `lint` distinguishes `Severity::Error`
-/// findings, which callers may want to treat as fatal in a later pass.
-fn report_findings(records: &[argenv::Record], args: &[String]) {
-    let invocation = Invocation { args, env: &ProcessEnv };
-    for finding in lint(records, &invocation) {
-        eprintln!("{:?}: {finding}", finding.severity());
-    }
-}
-
-fn run_flags_only(
-    command: &str,
-    args: &[String],
-    records: Vec<argenv::Record>,
-    problems: Vec<String>,
-    body: impl FnOnce(&argenv::Resolution) -> Result<(), String>,
-) -> ExitCode {
-    check_model(command, problems);
-    report_findings(&records, args);
-    let resolved = Invocation { args, env: &ProcessEnv }.resolve(&records);
-    match body(&resolved) {
+fn done(result: Result<(), String>) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("rhizoid: {e}");
@@ -165,51 +190,9 @@ fn run_flags_only(
     }
 }
 
-fn run_with_required_positional(
-    command: &str,
-    args: &[String],
-    what: &str,
-    records: Vec<argenv::Record>,
-    problems: Vec<String>,
-    body: impl FnOnce(&str, &argenv::Resolution) -> Result<(), String>,
-) -> ExitCode {
-    check_model(command, problems);
-    let Some(positional) = args.first() else {
-        eprintln!("rhizoid: missing <{what}>");
-        return ExitCode::from(2);
-    };
-    if positional.starts_with('-') {
-        eprintln!("rhizoid: expected <{what}> before any flags, found `{positional}`");
-        return ExitCode::from(2);
-    }
-    let rest = &args[1..];
-    report_findings(&records, rest);
-    let resolved = Invocation { args: rest, env: &ProcessEnv }.resolve(&records);
-    match body(positional, &resolved) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("rhizoid: {e}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn run_with_optional_positional(
-    command: &str,
-    args: &[String],
-    records: Vec<argenv::Record>,
-    problems: Vec<String>,
-    body: impl FnOnce(Option<&str>, &argenv::Resolution) -> Result<(), String>,
-) -> ExitCode {
-    check_model(command, problems);
-    let (positional, rest): (Option<&str>, &[String]) = match args.first() {
-        Some(first) if !first.starts_with('-') => (Some(first.as_str()), &args[1..]),
-        _ => (None, args),
-    };
-    report_findings(&records, rest);
-    let resolved = Invocation { args: rest, env: &ProcessEnv }.resolve(&records);
-    match body(positional, &resolved) {
-        Ok(()) => ExitCode::SUCCESS,
+fn emit(r: Result<String, generate::GenerateError>) -> ExitCode {
+    match r {
+        Ok(s) => done(commands::status::write_report(&mut std::io::stdout().lock(), &s)),
         Err(e) => {
             eprintln!("rhizoid: {e}");
             ExitCode::FAILURE

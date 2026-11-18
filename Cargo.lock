@@ -4,11 +4,21 @@ version = 3
 
 [[package]]
 name = "argenv"
-version = "0.1.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7343faecb34bb5e9347637e8313a6ae4de7c70cfe77c8f21918068e1bdedc12"
+checksum = "5414494aac0f50dda8a5816bc8c85aac13e2de988440d8ca5cd42eec6cc4f8e6"
 dependencies = [
- "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "argenv-resolve"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3afb7c62f9041212e82acf5ccc4c250c6b3baeb54cfa4c971fcd11c025244c4"
+dependencies = [
+ "argenv",
  "serde",
  "serde_json",
 ]
@@ -75,8 +85,9 @@ dependencies = [
 name = "rhizoid-cli"
 version = "0.1.0"
 dependencies = [
- "argenv",
+ "argenv-resolve",
  "rhizoid-core",
+ "serde",
  "serde_json",
  "toml",
 ]
