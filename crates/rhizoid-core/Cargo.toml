@@ -1,7 +1,6 @@
 [package]
 name = "rhizoid-core"
 description = "Manifest types, schema, and the git/GitHub ports for Rhizoid - no CLI, no argv."
-publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,5 +1,24 @@
 [workspace]
 changelog_config = "cliff.toml"
 dependencies_update = false
+# delivered as git tags and GitHub releases (`cargo install --git ... --tag vX.Y.Z rhizoid-cli`), not through crates.io
+publish = false
+git_only = true
 git_tag_enable = true
 git_release_enable = true
+# release-plz counts every commit since a tag as a change, its own 'chore: release' commit too, and would open the next
+# release PR for ever; only these kinds release
+release_commits = '^(feat|fix|perf|refactor|docs|test|build|ci)(\([^)]*\))?!?:'
+
+# rhizoid and its core are released together: one version, one tag (vX.Y.Z), on the program
+[[package]]
+name = "rhizoid-cli"
+version_group = "rhizoid"
+git_tag_name = "v{{ version }}"
+changelog_include = ["rhizoid-core"]
+
+[[package]]
+name = "rhizoid-core"
+version_group = "rhizoid"
+git_tag_enable = false
+git_release_enable = false
