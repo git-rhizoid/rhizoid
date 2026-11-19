@@ -191,3 +191,9 @@ Edit `nix/extensions.nix`. Anything in nixpkgs' own curated set
 the line. Anything else goes in the `extensionsFromVscodeMarketplace`
 block with `lib.fakeHash` as a placeholder; see "Pinning" above for
 how the real hash gets filled in.
+
+## Licence
+
+MIT OR Apache-2.0, at your option: [`LICENSE-MIT`](LICENSE-MIT) and [`LICENSE-APACHE`](LICENSE-APACHE). Every file
+is covered by an annotation in [`REUSE.toml`](REUSE.toml) (or an SPDX header), and `bin/check-licences.sh` fails CI
+on a file that is not.

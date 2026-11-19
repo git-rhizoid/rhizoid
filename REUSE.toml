@@ -1,0 +1,34 @@
+version = 1
+SPDX-PackageName = "rhizoid"
+SPDX-PackageDownloadLocation = "https://github.com/git-rhizoid/rhizoid"
+
+# everything here is the code of rhizoid, its tests, its documents and its build: MIT OR Apache-2.0 (decision
+# 2026-11-19-licences-for-our-repositories). Paths are listed, not swept up by `**`, so a new top-level file
+# is not covered until someone says what it is: bin/check-licences.sh fails on it in CI.
+[[annotations]]
+path = [
+  "crates/**",
+  "examples/**",
+  "tests/**",
+  "bin/**",
+  "nix/**",
+  ".github/**",
+  ".cargo/**",
+  ".envrc",
+  ".gitignore",
+  "AGENTS.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "Cargo.lock",
+  "Cargo.toml",
+  "README.md",
+  "cliff.toml",
+  "clippy.toml",
+  "init_devenv.sh",
+  "release-plz.toml",
+  "rustfmt.toml",
+  "shell.nix",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 git-rhizoid contributors"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
