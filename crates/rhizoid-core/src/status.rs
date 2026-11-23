@@ -8,7 +8,7 @@
 //! not what it should be (the shell's `sed` read whatever was there).
 
 use crate::finding::{Check, Finding, Verdict};
-use crate::graph::{Fork, Graph, Layer, PinRead, RepoName, Slice, Tool};
+use crate::graph::{Fork, Graph, Layer, RepoName, Slice, Tool};
 use crate::repos::{Level, RepoError, Repos};
 use crate::text::{
     is_three_part_release, latest_release, lines_missing, marked_part, raw_marked_part, same_text,
@@ -391,30 +391,7 @@ impl Cx<'_> {
             out.push(edge(Check::ToolPin).behind(format!("{follower} has no {} at {rev}", t.pin)));
             return Ok(());
         };
-        let pinned = match &t.read {
-            PinRead::Key(path) => {
-                let table = parse_toml(follower, &t.pin, &text)?;
-                let mut v = table.get(&path[0]);
-                for k in &path[1..] {
-                    v = v.and_then(|x| x.get(k));
-                }
-                match v {
-                    None => None,
-                    Some(toml::Value::String(s)) => Some(s.clone()),
-                    Some(_) => {
-                        return Err(RepoError::Failed(format!(
-                            "{follower}: {}: `{}` is not a string",
-                            t.pin,
-                            path.join(".")
-                        )))
-                    }
-                }
-            }
-            PinRead::Line { before, after } => text.lines().find_map(|l| {
-                let inner = l.strip_prefix(before.as_str())?.strip_suffix(after.as_str())?;
-                Some(inner.to_string())
-            }),
-        };
+        let pinned = crate::pins::read_pin(t, follower, &text)?;
         let latest = self.latest(&t.source, &t.tag_prefix)?;
         out.push(match pinned {
             Some(p) if p == latest => edge(Check::ToolPin).current(format!("{} {p}", t.name)),
