@@ -232,6 +232,61 @@ impl Repos for GitRepos<'_> {
         }
         Ok(grep_hits(&String::from_utf8_lossy(&out.stdout), rev))
     }
+
+    fn marked(
+        &self,
+        repo: &RepoName,
+        rev: &str,
+        attr: &str,
+        paths: &[String],
+    ) -> Result<BTreeSet<String>, RepoError> {
+        if paths.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        // the attributes at `rev`, as the repository's own .gitattributes there say: paths in on stdin, NUL-ended,
+        // and out as PATH, NUL, ATTR, NUL, VALUE, NUL
+        let source = format!("--source={rev}");
+        let args = ["check-attr", "-z", "--stdin", source.as_str(), attr];
+        let mut ask = Command::new("git");
+        // the repository's own attributes only: a person's global attributes file marks nothing here
+        ask.arg("-C").arg(self.clone_dir(repo)?).args(["-c", "core.attributesFile=/dev/null"]);
+        ask.args(args).stdin(Stdio::piped());
+        ask.env("GIT_TERMINAL_PROMPT", "0").env("LC_ALL", "C");
+        ask.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child =
+            ask.spawn().map_err(|e| RepoError::Failed(format!("cannot run git: {e}")))?;
+        let input: Vec<u8> = paths.iter().flat_map(|p| p.bytes().chain([0])).collect();
+        // written beside the read, never before it: git answers as it reads, and a full pipe each way would wait
+        let writer = child.stdin.take().map(|mut stdin| {
+            std::thread::spawn(move || {
+                use std::io::Write;
+                stdin.write_all(&input)
+            })
+        });
+        let out = child
+            .wait_with_output()
+            .map_err(|e| RepoError::Failed(format!("{repo}: git check-attr: {e}")))?;
+        let written = writer.map(|w| w.join());
+        // git's own words first: a git that stopped early breaks the pipe, and that says nothing of why
+        if !out.status.success() {
+            return Err(RepoError::Failed(format!("{repo}: {}", failure(&args, &out))));
+        }
+        if let Some(Ok(Err(e))) = written {
+            return Err(RepoError::Failed(format!("{repo}: git check-attr: {e}")));
+        }
+        Ok(marked_paths(&String::from_utf8_lossy(&out.stdout)))
+    }
+}
+
+/// The paths `git check-attr -z` printed as marked: each answer PATH, NUL, ATTR, NUL, VALUE, NUL, marked when its
+/// value is `set` or any other value but `unset`, `unspecified` or `false`.
+fn marked_paths(out: &str) -> BTreeSet<String> {
+    let fields: Vec<&str> = out.split('\0').collect();
+    fields
+        .chunks_exact(3)
+        .filter(|f| !matches!(f[2], "unset" | "unspecified" | "false"))
+        .map(|f| f[0].to_string())
+        .collect()
 }
 
 impl GitRepos<'_> {
@@ -438,6 +493,14 @@ mod tests {
         assert_eq!(fetched_tags(&output(1, "", "")), None, "refusing nothing");
         let killed = Output { status: std::process::ExitStatus::from_raw(9), ..output(1, tag, "") };
         assert_eq!(fetched_tags(&killed), None, "a signal");
+    }
+
+    #[test]
+    fn a_path_is_marked_when_its_attribute_is_set_or_given_a_value() {
+        let out = "a\0r\0set\0b\0r\0unspecified\0c\0r\0unset\0d\0r\0yes\0e\0r\0false\0";
+        let want: BTreeSet<String> = ["a", "d"].map(String::from).into();
+        assert_eq!(marked_paths(out), want);
+        assert!(marked_paths("").is_empty());
     }
 
     #[test]

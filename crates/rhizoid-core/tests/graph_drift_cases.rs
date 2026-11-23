@@ -294,6 +294,15 @@ fn a_clone_that_is_missing_stops_the_report() {
         ) -> Result<Vec<(String, u64, String)>, RepoError> {
             Err(RepoError::NoClone(r.to_string()))
         }
+        fn marked(
+            &self,
+            r: &rhizoid_core::RepoName,
+            _: &str,
+            _: &str,
+            _: &[String],
+        ) -> Result<std::collections::BTreeSet<String>, RepoError> {
+            Err(RepoError::NoClone(r.to_string()))
+        }
     }
     let e = status(&graph(), &NoClones).unwrap_err();
     assert!(matches!(e, RepoError::NoClone(_)), "{e}");
@@ -617,4 +626,17 @@ fn a_longer_tag_that_starts_with_the_pins_is_no_copy() {
     let mut w = World::current();
     w.put(LAB_MACHINE, MAIN, "CHANGELOG.md", "lpoco-v0.17.10 and lpoco-v0.17.1-cut.2\n");
     assert_eq!(one(&run(&w), LAB_MACHINE, Check::PinCopies).verdict, Verdict::Current);
+}
+
+#[test]
+fn a_copy_in_a_file_the_follower_marks_as_a_record_is_skipped_and_an_unmarked_one_is_found() {
+    let mut w = World::current();
+    w.put(LAB_MACHINE, MAIN, ".gitattributes", "data/** rhizoid-records\n");
+    w.put(LAB_MACHINE, MAIN, "data/backlog.json", "{\"note\":\"moved to lpoco-v0.17.1\"}\n");
+    let f = one(&run(&w), LAB_MACHINE, Check::PinCopies).clone();
+    assert_eq!(f.verdict, Verdict::Current, "a record is history, no pin: {f}");
+    w.put(LAB_MACHINE, MAIN, "procedures/install.md", "uses lpoco-v0.17.1\n");
+    let f = one(&run(&w), LAB_MACHINE, Check::PinCopies).clone();
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(f.detail.contains("procedures/install.md:1") && !f.detail.contains("data/"), "{f}");
 }

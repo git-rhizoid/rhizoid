@@ -154,6 +154,30 @@ impl Repos for World {
         }
         Ok(hits)
     }
+    /// The fixture's .gitattributes, read for the two shapes the tests use: `DIR/** ATTR` and `PATH ATTR`.
+    fn marked(
+        &self,
+        repo: &RepoName,
+        rev: &str,
+        attr: &str,
+        paths: &[String],
+    ) -> Result<BTreeSet<String>, RepoError> {
+        let attributes = self.file(repo, rev, ".gitattributes")?.unwrap_or_default();
+        let patterns: Vec<&str> = attributes
+            .lines()
+            .filter_map(|l| l.split_once(' ').filter(|(_, a)| a.trim() == attr).map(|(p, _)| p))
+            .collect();
+        Ok(paths
+            .iter()
+            .filter(|path| {
+                patterns.iter().any(|p| match p.strip_suffix("/**") {
+                    Some(dir) => path.starts_with(&format!("{dir}/")),
+                    None => *path == p,
+                })
+            })
+            .cloned()
+            .collect())
+    }
 }
 
 pub fn graph() -> Graph {

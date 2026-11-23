@@ -601,3 +601,43 @@ fn land_needs_now_and_a_land_command_in_the_graph() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(String::from_utf8_lossy(&out.stderr).contains("[bump] land"), "{out:?}");
 }
+
+#[test]
+fn a_copy_in_a_file_marked_rhizoid_records_never_stops_a_bump() {
+    let w = world(PASSING_GATE);
+    std::fs::create_dir_all(w.lab.join("data")).unwrap();
+    std::fs::write(w.lab.join(".gitattributes"), "data/** rhizoid-records\n").unwrap();
+    std::fs::write(w.lab.join("data/log.json"), "{\"done\":\"lpoco-attended-v0.1.0 laid\"}\n")
+        .unwrap();
+    std::fs::write(w.lab.join("ci.yml"), "uses: lpoco-v1.0.0\n").unwrap();
+    git(&w.lab, &["add", "-A"]);
+    git(&w.lab, &["commit", "-q", "-m", "a record and a second copy"]);
+    git(&w.lab, &["push", "-q", "origin", "main"]);
+    git(&w.lab, &["fetch", "-q"]);
+    let out = w.bump(&["now"]);
+    assert_eq!(value(&out, "pin.1.copies").as_deref(), Some("ci.yml:1"), "unmarked: found");
+    assert_eq!(value(&out, "pin.1.state").as_deref(), Some("refused"));
+    assert_eq!(value(&out, "pin.2.copies"), None, "marked as a record: skipped");
+    assert_eq!(value(&out, "pin.2.state").as_deref(), Some("bumped"), "{out:?}");
+}
+
+#[test]
+fn thousands_of_marked_records_are_read_without_a_stall() {
+    let w = world(PASSING_GATE);
+    std::fs::create_dir_all(w.lab.join("data/log")).unwrap();
+    std::fs::write(w.lab.join(".gitattributes"), "data/** rhizoid-records\n").unwrap();
+    for n in 0..5000 {
+        std::fs::write(
+            w.lab.join(format!("data/log/entry-with-a-long-name-{n:05}.json")),
+            "lpoco-attended-v0.1.0\n",
+        )
+        .unwrap();
+    }
+    git(&w.lab, &["add", "-A"]);
+    git(&w.lab, &["commit", "-q", "-m", "many records"]);
+    git(&w.lab, &["push", "-q", "origin", "main"]);
+    git(&w.lab, &["fetch", "-q"]);
+    let out = w.bump(&[]);
+    assert_eq!(value(&out, "pin.2.copies"), None, "{out:?}");
+    assert_eq!(value(&out, "pin.2.state").as_deref(), Some("behind"));
+}
