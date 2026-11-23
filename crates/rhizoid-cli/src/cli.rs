@@ -372,6 +372,15 @@ contract! {
         ..Input::EMPTY
     };
 
+    FOLLOW_EXTRA: String, Command = Input {
+        key: "follow_extra",
+        ty: Type::String,
+        subcommands: &[Command::Follow],
+        arg: Some(Arg { value_name: "NOTHING", ..Arg::positional(2) }),
+        summary: "Nothing goes after VERSION: anything there is refused.",
+        ..Input::EMPTY
+    };
+
     AGENT_WORKTREES: String = Input {
         key: "agent_worktrees",
         ty: Type::String,

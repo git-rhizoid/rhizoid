@@ -167,6 +167,9 @@ fn request(r: &Resolution) -> Result<Request, String> {
                 force: Contract::FORCE.get_from(r).unwrap_or(false),
             }
         }
+        Command::Follow if Contract::FOLLOW_EXTRA.get_from(r).is_some() => {
+            return Err("usage: rhizoid follow --source DIR BASE VERSION".to_string())
+        }
         Command::Follow => Request::Follow(commands::follow::Ask {
             source: Contract::SOURCE
                 .get_from(r)

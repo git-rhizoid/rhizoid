@@ -45,10 +45,17 @@ fn git(dir: &Path, args: &[&str]) {
 fn write(root: &Path, files: &[(&str, &str)]) {
     for (path, text) in files {
         let p = root.join(path);
+        if *text == DELETED {
+            let _ = std::fs::remove_file(&p);
+            continue;
+        }
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, text).unwrap();
     }
 }
+
+/// A file's content that says: this release deletes it.
+const DELETED: &str = "\u{0}deleted";
 
 /// A source repository: each release its files, tagged vVERSION.
 fn source(root: &Path, releases: &[(&str, &[(&str, &str)])]) -> PathBuf {
@@ -189,6 +196,48 @@ fn scenarios() -> Vec<Scenario> {
         },
         Scenario {
             origin: None,
+            name: "an own file the release deleted: the shell stops after its header",
+            releases: two(vec![("records/part.sql", DELETED)]),
+            base: vec![("records/part.sql", "-- the base's own part\n"), ("devicebase.toml", pin)],
+            version: "0.2.0",
+        },
+        Scenario {
+            origin: None,
+            name: "the pin is a generic file: laid, then moved",
+            releases: vec![("0.1.0", vec![("generic", "#! pin = devicebase.toml\ndevicebase.toml\nqueries/phone.sql\n"), ("devicebase.toml", "# laid by the source\nsource = \"y/src\"\nversion = \"9\"\n"), ("queries/phone.sql", "-- phone\n")])],
+            base: vec![("devicebase.toml", "source = \"x/src\"\nversion = \"0.0.1\"\n")],
+            version: "0.1.0",
+        },
+        Scenario {
+            origin: None,
+            name: "a CRLF pin: sed sees no version nor own",
+            releases: two(vec![]),
+            base: vec![("records/part.sql", "-- the base's own part\n"), ("devicebase.toml", "source = \"x/src\"\r\nversion = \"0.1.0\"\r\nown = [\"records/part.sql\"]\r\n")],
+            version: "0.2.0",
+        },
+        Scenario {
+            origin: None,
+            name: "a CRLF generic: a name with its carriage return",
+            releases: vec![("0.1.0", vec![("generic", "#! pin = p.toml\r\nA.md\r\n"), ("A.md", "a\n")])],
+            base: vec![],
+            version: "0.1.0",
+        },
+        Scenario {
+            origin: None,
+            name: "own on two lines and with a tab: only entries between spaces are own",
+            releases: two(vec![("records/part.sql", "-- part v2\n")]),
+            base: vec![("records/part.sql", "-- the base's own part\n"), ("queries/phone.sql", "-- the base's phone\n"), ("devicebase.toml", "version = \"0.1.0\"\nown = [\"records/part.sql\"]\nown = [\"queries/phone.sql\",\t\"AGENTS.md\"]\n")],
+            version: "0.2.0",
+        },
+        Scenario {
+            origin: Some("https://h/a/b/"),
+            name: "a remote with a trailing slash names the pin it makes as sed reads it",
+            releases: two(vec![]),
+            base: vec![],
+            version: "0.2.0",
+        },
+        Scenario {
+            origin: None,
             name: "a release that does not exist",
             releases: two(vec![]),
             base: vec![("devicebase.toml", pin)],
@@ -302,4 +351,44 @@ fn rhizoid_follow_does_what_follow_sh_is_known_to_do() {
     let missing = rhizoid(&src, &b, "9.9.9");
     assert_eq!(missing.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&missing.stderr).contains("follow: no release v9.9.9 in"));
+}
+
+#[test]
+fn a_source_named_through_a_link_keeps_the_links_name_as_the_shell_does() {
+    let Some(kb) = std::env::var_os("RHIZOID_IDEALKB").map(PathBuf::from) else { return };
+    let s = &scenarios()[3];
+    let (src, a, b) = build(s);
+    let link = src.parent().unwrap().join("linkname");
+    std::os::unix::fs::symlink(&src, &link).unwrap();
+    let shell = Command::new("sh")
+        .arg(kb.join("bin/follow.sh"))
+        .arg("--source")
+        .arg(&link)
+        .arg(&a)
+        .arg(s.version)
+        .output()
+        .unwrap();
+    let ours = rhizoid(&link, &b, s.version);
+    assert_eq!(String::from_utf8_lossy(&ours.stdout), String::from_utf8_lossy(&shell.stdout));
+    assert_eq!(tree(&b), tree(&a));
+}
+
+#[test]
+fn anything_after_the_version_is_refused() {
+    let s = &scenarios()[0];
+    let (src, _, b) = build(s);
+    let out = Command::new(bin())
+        .args(["follow", "--source"])
+        .arg(&src)
+        .arg(&b)
+        .args([s.version, "extra"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        tree(&b)
+            .get("devicebase.toml")
+            .is_some_and(|p| p.ends_with(b"version = \"0.1.0\"\nown = [\"records/part.sql\"]\n")),
+        "nothing laid"
+    );
 }

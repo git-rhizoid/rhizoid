@@ -288,6 +288,11 @@ names as `own` left as they are, with `diff -u` of what the release changed in t
 without their trailing newlines, `generic` lines split on whitespace, and a listed file the release lacks ending it
 there with git's 128.
 
+Where it parts from the shell, on purpose: a marker that is a regular expression to the shell (`#! marker = a.b`) is
+refused (rhizoid takes a plain word); a write that fails (a folder where a file goes) ends it with rhizoid's message
+and 2, not the shell's; bash's warning about a NUL byte in a compared file is not printed (the comparison, NULs
+dropped, is the same).
+
 `crates/rhizoid-cli/tests/follow_agrees.rs` proves it against the shell: with `RHIZOID_IDEALKB=DIR` (a clone of
 ideal-knowledge-base) it lays each scenario with `follow.sh` and with `rhizoid follow` and compares what each said,
 how each ended and the trees they left, byte for byte, then runs idealkb's own `bin/test-follow.sh` with its

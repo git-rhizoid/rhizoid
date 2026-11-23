@@ -41,6 +41,13 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features
 
+      # rhizoid follow stands in for ideal-knowledge-base's bin/follow.sh: compared byte for byte with it on every
+      # change, and idealkb's own bin/test-follow.sh run with rhizoid standing in (tests/follow_agrees.rs)
+      - name: Follow agrees with idealkb's follow.sh
+        run: |
+          git clone -q --depth 1 https://github.com/grenudi/ideal-knowledge-base "$RUNNER_TEMP/idealkb"
+          RHIZOID_IDEALKB="$RUNNER_TEMP/idealkb" cargo test -p rhizoid-cli --test follow_agrees
+
       - name: Docs (warnings are errors)
         run: cargo doc --no-deps --all-features
         env:
