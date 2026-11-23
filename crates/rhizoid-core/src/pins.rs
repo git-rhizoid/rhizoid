@@ -545,6 +545,19 @@ mod tests {
     }
 
     #[test]
+    fn a_cargo_patch_entry_with_a_url_in_its_key_moves() {
+        let t = tool("pin = \"Cargo.toml\"\nkey = 'patch.\"https://github.com/linux-phone-oco/lab-tools\".lpoco-bringup.tag'\nvalue = \"lpoco-v{version}-cut.1\"\n");
+        let text = "[dependencies]\nlpoco-bringup = { git = \"https://github.com/linux-phone-oco/lab-tools\", tag = \"lpoco-v0.42.0\" }\n\n[patch.\"https://github.com/linux-phone-oco/lab-tools\"]\nlpoco-bringup = { git = \"https://github.com/grenudi/lab-tools\", tag = \"lpoco-v0.42.0-cut.1\" }\n";
+        assert_eq!(read_pin(&t, &name(), text).unwrap().as_deref(), Some("0.42.0"));
+        let moved = edit_pin(&t, text, "0.42.0", "0.43.0").unwrap();
+        assert!(moved.contains("tag = \"lpoco-v0.43.0-cut.1\""), "{moved}");
+        assert!(
+            moved.contains("tag = \"lpoco-v0.42.0\" }"),
+            "the upstream dependency itself stays: {moved}"
+        );
+    }
+
+    #[test]
     fn a_line_pin_moves_its_line() {
         let t = tool("pin = \"bin/install.sh\"\nline = 'version=\"${V:-{version}}\"'\n");
         let text = "#!/bin/sh\nversion=\"${V:-0.7.1}\"\necho $version\n";
