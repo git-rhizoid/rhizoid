@@ -48,12 +48,14 @@ impl PatchSide {
 pub struct Record {
     /// The fork, `owner/repo`.
     pub fork: String,
-    /// Its tracking branch.
-    pub branch: String,
+    /// Its tracking branch (none for an integration cutting, which tracks releases).
+    pub branch: Option<String>,
     /// Its upstream: `owner/repo` or a URL.
     pub upstream: String,
     /// The upstream's branch tracking follows.
-    pub upstream_branch: String,
+    pub upstream_branch: Option<String>,
+    /// For an integration cutting, whose releases its topics are on: the `[[integration]]` edge's `releases`.
+    pub tracks: Option<String>,
     /// Its patch side.
     pub patches: String,
     /// `add` or `import`.
@@ -123,10 +125,17 @@ impl Step {
             Step::MergePatch { branch, tracking, remote } => {
                 format!("merge {tracking} into {branch} in a fresh worktree, and push {branch} to the fork ({remote})")
             }
-            Step::Record { record } => format!(
-                "record in the graph: fork {} tracking {} from {} {}, patches {}, added by {}",
-                record.fork, record.branch, record.upstream, record.upstream_branch, record.patches, record.added
-            ),
+            Step::Record { record } => {
+                let tracking = match (&record.tracks, &record.branch) {
+                    (Some(t), _) => format!("tracking the releases of {t}"),
+                    (None, Some(b)) => format!("tracking {b} from {} {}", record.upstream, record.upstream_branch.as_deref().unwrap_or(b)),
+                    (None, None) => format!("from {}", record.upstream),
+                };
+                format!(
+                    "record in the graph: fork {} {tracking} (upstream {}), patches {}, added by {}",
+                    record.fork, record.upstream, record.patches, record.added
+                )
+            }
             Step::Drop { fork } => format!("take fork {fork} out of the graph (the fork itself stays)"),
         }
     }
@@ -266,6 +275,35 @@ pub fn plan_import(
             ));
         }
     }
+    // an integration cutting's topics are on the releases of the integration's source, not on a branch of the fork:
+    // that is what it tracks, unless --tracked-ref (or the graph) names a branch
+    let named_branch = ask.tracking.is_some() || had.and_then(|f| f.branch.as_ref()).is_some();
+    let (branch, upstream_branch, tracks) = match &side {
+        PatchSide::Integration if !named_branch => {
+            let releases = graph
+                .integrations
+                .iter()
+                .find(|i| &i.repo == fork)
+                .and_then(|i| i.releases.as_ref().map(|r| r.to_string()));
+            match releases {
+                Some(r) => {
+                    plan.notes.push(format!(
+                        "{fork}'s default branch on GitHub is {tracking}: information only - its topics follow the releases of {r}"
+                    ));
+                    (None, None, Some(r))
+                }
+                None => {
+                    if has_integration(graph, fork) {
+                        plan.blocked.push(format!(
+                            "the [[integration]] edge for {fork} names no releases source: add releases = \"owner/repo\" to it, or give --tracked-ref"
+                        ));
+                    }
+                    (None, None, None)
+                }
+            }
+        }
+        _ => (Some(tracking.clone()), Some(upstream_branch), None),
+    };
     let remote = if clone.exists { fork_remote(git, fork)? } else { None };
     let on_fork = match (&side, &remote) {
         (PatchSide::Branch(b), Some(r)) => git.commit(&format!("refs/remotes/{r}/{b}"))?.is_some(),
@@ -275,9 +313,10 @@ pub fn plan_import(
     plan.steps.push(Step::Record {
         record: Record {
             fork: fork.to_string(),
-            branch: tracking,
+            branch,
             upstream,
             upstream_branch,
+            tracks,
             patches: side.word().to_string(),
             added: had.and_then(|f| f.added.clone()).unwrap_or_else(|| "import".to_string()),
         },
@@ -320,9 +359,10 @@ pub fn plan_add(
     plan.steps.push(Step::Record {
         record: Record {
             fork: fork.to_string(),
-            branch: tracking.clone(),
+            branch: Some(tracking.clone()),
             upstream: source.to_string(),
-            upstream_branch: ask.upstream_branch.unwrap_or(&tracking).to_string(),
+            upstream_branch: Some(ask.upstream_branch.unwrap_or(&tracking).to_string()),
+            tracks: None,
             patches: side.word().to_string(),
             added: "add".to_string(),
         },
@@ -406,6 +446,14 @@ pub fn plan_update(
         plan.blocked.push(format!("{fork} is no cutting in the graph: import it first"));
         return Ok(plan);
     };
+    // an integration cutting that tracks releases has no branch to move: its topics are rebased onto releases, by hand
+    if PatchSide::of(f.patches.as_deref()) == PatchSide::Integration && f.branch.is_none() {
+        let tracks = f.tracks.clone().unwrap_or_else(|| "its integration's releases".to_string());
+        plan.notes.push(format!(
+            "patches = integration, tracking the releases of {tracks}: nothing is merged or pushed - a topic behind the newest release is rebased onto it, the lane's work"
+        ));
+        return Ok(plan);
+    }
     let tracking = match &f.branch {
         Some(b) => b.clone(),
         None => gh.default_branch(fork.as_str())?,
@@ -662,7 +710,7 @@ fn module_file(
         "# This fork is a rhizoid cutting: its tracking branch is {upstream}'s, its changes are on this branch.\n\
          origin = \"{upstream}\"\ntracked_ref = \"{branch}\"\nlast_synced_commit = \"{synced}\"\nadded_as = \"{added}\"\nattached_on = \"{today}\"\n",
         upstream = r.upstream,
-        branch = r.branch,
+        branch = r.branch.as_deref().unwrap_or(""),
     );
     let dir = worktree.join(".rhizoid");
     std::fs::create_dir_all(&dir).map_err(|e| PortError(format!("{}: {e}", dir.display())))?;
@@ -726,42 +774,43 @@ fn split(text: &str) -> (Vec<&str>, &'static str) {
 /// rest of the file is kept as it is; the result is read back before it is given.
 pub fn record_fork(text: &str, r: &Record) -> Result<String, String> {
     let (lines, eol) = split(text);
-    let fields = [
-        ("branch", r.branch.as_str()),
-        ("upstream", r.upstream.as_str()),
-        ("upstream_branch", r.upstream_branch.as_str()),
-        ("patches", r.patches.as_str()),
-        ("added", r.added.as_str()),
-    ];
+    let fields: Vec<(&str, &str)> = [
+        ("branch", r.branch.as_deref()),
+        ("upstream", Some(r.upstream.as_str())),
+        ("upstream_branch", r.upstream_branch.as_deref()),
+        ("tracks", r.tracks.as_deref()),
+        ("patches", Some(r.patches.as_str())),
+        ("added", Some(r.added.as_str())),
+    ]
+    .into_iter()
+    .filter_map(|(k, v)| v.map(|v| (k, v)))
+    .collect();
     let blocks = fork_blocks(&lines, &r.fork);
     let out = match blocks.as_slice() {
         [] => {
             let mut out = text.trim_end_matches(['\n', '\r']).to_string();
             for line in [
                 String::new(),
-                format!(
-                    "# a cutting (rhizcut): tracking {} from {}; its changes on {}",
-                    r.branch, r.upstream, r.patches
-                ),
+                format!("# a cutting (rhizcut) of {}; its changes on {}", r.upstream, r.patches),
                 "[[fork]]".to_string(),
                 format!("fork = \"{}\"", r.fork),
             ] {
                 out.push_str(eol);
                 out.push_str(&line);
             }
-            for (k, v) in fields {
+            for (k, v) in &fields {
                 out.push_str(&format!("{eol}{k} = \"{v}\""));
             }
             out + eol
         }
         [(start, end)] => {
             let mut add = Vec::new();
-            for (k, v) in fields {
+            for (k, v) in &fields {
                 let said = lines[start + 1..*end]
                     .iter()
-                    .find_map(|l| key_value(l).filter(|(key, _)| *key == k).map(|(_, val)| val));
+                    .find_map(|l| key_value(l).filter(|(key, _)| key == k).map(|(_, val)| val));
                 match said {
-                    Some(s) if s == v => {}
+                    Some(s) if s == *v => {}
                     Some(s) => {
                         return Err(format!(
                             "the graph's fork {} says {k} = {s:?}, not {v:?}: change it by hand",
@@ -833,9 +882,10 @@ mod tests {
     fn record(patches: &str) -> Record {
         Record {
             fork: "grenudi/linux".into(),
-            branch: "master".into(),
+            branch: Some("master".into()),
             upstream: "sm7150-mainline/linux".into(),
-            upstream_branch: "master".into(),
+            upstream_branch: Some("master".into()),
+            tracks: None,
             patches: patches.into(),
             added: "import".into(),
         }

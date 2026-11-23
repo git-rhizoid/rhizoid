@@ -162,7 +162,7 @@ fn wrote_to_github(calls: &str) -> bool {
     calls.lines().any(|c| c.starts_with("repo fork") || c.contains("-X POST"))
 }
 
-const LINUX_LIKE: &str = "[[fork]]\nfork = \"acme/fork\"\nupstream = \"up/stream\"\n\n[[integration]]\nrepo = \"acme/fork\"\ntopics = [\"topic/ITEM\"]\n";
+const LINUX_LIKE: &str = "[[fork]]\nfork = \"acme/fork\"\nupstream = \"up/stream\"\n\n[[integration]]\nrepo = \"acme/fork\"\ntopics = [\"topic/ITEM\"]\nreleases = \"torvalds/linux\"\n";
 
 #[test]
 fn importing_with_an_integration_patch_side_records_it_and_writes_nothing_outward() {
@@ -178,7 +178,7 @@ fn importing_with_an_integration_patch_side_records_it_and_writes_nothing_outwar
     let done = w.rhizoid(&["import", "acme/fork", "now", "--patches", "integration"]);
     assert_eq!(done.status.code(), Some(0), "{done:?}");
     let text = w.graph_text();
-    assert!(text.contains("fork = \"acme/fork\"\nbranch = \"master\"\nupstream_branch = \"master\"\npatches = \"integration\"\nadded = \"import\"\nupstream = \"up/stream\""), "{text}");
+    assert!(text.contains("fork = \"acme/fork\"\ntracks = \"torvalds/linux\"\npatches = \"integration\"\nadded = \"import\"\nupstream = \"up/stream\""), "{text}");
     assert!(text.contains("[[integration]]\nrepo = \"acme/fork\""), "the rest kept");
     assert!(!wrote_to_github(&w.calls()), "{}", w.calls());
     assert_eq!(git(&w.fork, &["branch", "--list"]), "* master", "nothing pushed to the fork");
@@ -388,4 +388,66 @@ fn a_record_that_conflicts_with_the_graph_blocks_the_plan_before_anything_outwar
         w.rhizoid(&["import", "acme/fork", "--patches", "integration", "--tracked-ref", "master"]);
     assert_eq!(plan.status.code(), Some(1), "{plan:?}");
     assert!(value(&plan, "blocked.1").unwrap().contains("change it by hand"), "{plan:?}");
+}
+
+#[test]
+fn an_integration_cutting_tracks_its_releases_source_unless_a_branch_is_named() {
+    let w = world(Some("up/stream"));
+    w.graph("[[fork]]\nfork = \"acme/fork\"\nupstream = \"up/stream\"\n\n[[integration]]\nrepo = \"acme/fork\"\n");
+    let plan = w.rhizoid(&["import", "acme/fork", "--patches", "integration"]);
+    assert_eq!(plan.status.code(), Some(1), "{plan:?}");
+    assert!(value(&plan, "blocked.1").unwrap().contains("names no releases source"), "{plan:?}");
+    let named = w.rhizoid(&[
+        "import",
+        "acme/fork",
+        "now",
+        "--patches",
+        "integration",
+        "--tracked-ref",
+        "master",
+    ]);
+    assert_eq!(named.status.code(), Some(0), "{named:?}");
+    assert!(
+        w.graph_text().contains("branch = \"master\""),
+        "--tracked-ref wins: {}",
+        w.graph_text()
+    );
+    assert!(!w.graph_text().contains("tracks ="));
+}
+
+#[test]
+fn update_of_an_integration_cutting_pushes_nothing_and_names_topics_behind_the_newest_release() {
+    let w = world(Some("up/stream"));
+    git(&w.fork, &["tag", "v1.0", "master"]);
+    git(&w.clone, &["fetch", "-q", "--tags"]);
+    git(&w.clone, &["branch", "-q", "topic/a", "v1.0"]);
+    let work = w.root.join("upwork");
+    assert!(Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&w.upstream)
+        .arg(&work)
+        .status()
+        .unwrap()
+        .success());
+    std::fs::write(work.join("NEW"), "1.1\n").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "1.1"]);
+    git(&work, &["tag", "-a", "-m", "v1.1", "v1.1"]);
+    git(&work, &["push", "-q", "origin", "master", "v1.1"]);
+    git(&w.clone, &["fetch", "-q", w.upstream.to_str().unwrap(), "refs/tags/v1.1:refs/tags/v1.1"]);
+    w.graph(&format!(
+        "[clones]\n\"acme/fork\" = \"acme/fork\"\n\n[[fork]]\nfork = \"acme/fork\"\nupstream = \"up/stream\"\ntracks = \"{u}\"\npatches = \"integration\"\nadded = \"import\"\n\n[[integration]]\nrepo = \"acme/fork\"\ntopics = [\"topic/ITEM\"]\nreleases = \"{u}\"\n",
+        u = w.upstream.display()
+    ));
+    let before = git(&w.fork, &["rev-parse", "master"]);
+    let out = w.rhizoid(&["update", "acme/fork", "now"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(value(&out, "step.1"), None, "no step: nothing to merge or push");
+    assert!(value(&out, "note.1").unwrap().contains("nothing is merged or pushed"), "{out:?}");
+    assert!(
+        value(&out, "note.2").unwrap().contains("topic/a is on v1.0; the newest release is v1.1"),
+        "{out:?}"
+    );
+    assert_eq!(git(&w.fork, &["rev-parse", "master"]), before);
+    assert!(!wrote_to_github(&w.calls()), "{}", w.calls());
 }
