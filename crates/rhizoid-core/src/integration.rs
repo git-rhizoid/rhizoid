@@ -92,6 +92,8 @@ pub trait IntegrationReads {
         remote: &str,
         namespace: &str,
     ) -> Result<Result<Vec<(String, String)>, String>, RepoError>;
+    /// Whether the clone is shallow: a commit it lacks may be one it was never given.
+    fn is_shallow(&self, repo: &RepoName) -> Result<bool, RepoError>;
     /// Whether the clone has the commit `sha`.
     fn has_commit(&self, repo: &RepoName, sha: &str) -> Result<bool, RepoError>;
     /// Whether the trees of `a` and `b` are the same.
@@ -221,7 +223,12 @@ impl<'a> Clone<'a> {
 
     fn topics(&self, out: &mut Vec<Finding>) -> Result<(), RepoError> {
         let topics: Vec<_> = self.topic_branches().collect();
-        if topics.is_empty() {
+        // the newest release is asked for only when a topic needs it: one that names its base does not
+        if topics.iter().all(|(b, _, p)| p.base_of(b).is_some()) {
+            for (branch, sha, pattern) in topics {
+                let base = pattern.base_of(branch).expect("every topic names its base");
+                out.push(self.on_named_base(branch, sha, base)?);
+            }
             return Ok(());
         }
         let releases = match &self.edge.releases {
@@ -265,6 +272,14 @@ impl<'a> Clone<'a> {
         newest_sha: &str,
     ) -> Result<Finding, RepoError> {
         let have_it = self.git.has_commit(self.repo(), newest_sha)?;
+        if !have_it && self.git.is_shallow(self.repo())? {
+            return Ok(self.finding(
+                Check::TopicBase,
+                newest,
+                Verdict::NotKnownYet,
+                format!("{branch}: the newest release, {newest}, is not in this shallow clone - whether {branch} is on it is not known yet"),
+            ));
+        }
         if have_it && self.git.is_ancestor(self.repo(), newest_sha, sha)? {
             return Ok(self.finding(
                 Check::TopicBase,
@@ -385,9 +400,9 @@ impl<'a> Clone<'a> {
             out.push(self.finding(
                 Check::BranchOrigin,
                 "origin",
-                Verdict::MovedByHand,
+                Verdict::Current,
                 format!(
-                    "{} topic branches are only in this clone, not on origin: {}",
+                    "{} topic branches are only in this clone, not on origin (not shared yet): {}",
                     only_local.len(),
                     only_local.join(", ")
                 ),

@@ -25,7 +25,8 @@ repositories follow which source, and what a source's tags look like. Each follo
 read. `tests/agree-with-graph-drift.sh` runs it against the shell it replaces, `graph-drift.sh` of
 `linux-phone-oco/docs`, on the real graph and compares them edge by edge.
 
-It reads the clones as they are (`--fetch` first fetches each clone's branches from `origin`, pruning the ones `origin`
+It reads the clones as they are, and asks remotes only for their refs (`git ls-remote`: no objects - a fork's
+upstream, an integration's `origin` and `releases`) (`--fetch` first fetches each clone's branches from `origin`, pruning the ones `origin`
 no longer has, then its tags without pruning, so a tag made locally stays), and pin files as TOML, not as lines. Where it answers differently from the shell on purpose: a file named in `own` that neither side has is
 `behind` (a typo), a pin that names a release its source never made is `behind`, a fork ahead of its upstream is
 `moved-by-hand` and not behind, a pin file that is not what it should be stops the report. The old `status`, which

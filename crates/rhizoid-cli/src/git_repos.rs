@@ -209,9 +209,25 @@ impl IntegrationReads for GitRepos<'_> {
             return Ok(Err(format!("{remote} starts with a dash")));
         }
         // one ask: a tag's peeled line (NAME^{}) overwrites its own, so each name carries its commit
-        let out = git(&self.clone_dir(repo)?, &["ls-remote", remote, &format!("{namespace}*")])?;
+        let mut ask = Command::new("git");
+        ask.arg("-C").arg(self.clone_dir(repo)?).args([
+            "ls-remote",
+            remote,
+            &format!("{namespace}*"),
+        ]);
+        // a remote that cannot answer is not known yet: never a prompt, never a wait without end
+        ask.env("GIT_ASKPASS", "true");
+        if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+            ask.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=10");
+        }
+        let out = plain(&mut ask)?;
         if !out.status.success() {
-            return Ok(Err(stderr(&out)));
+            let why = stderr(&out);
+            return Ok(Err(if why.is_empty() {
+                "git ls-remote failed, saying nothing".to_string()
+            } else {
+                why
+            }));
         }
         let mut refs: std::collections::BTreeMap<String, String> =
             std::collections::BTreeMap::new();
@@ -228,6 +244,10 @@ impl IntegrationReads for GitRepos<'_> {
             }
         }
         Ok(Ok(refs.into_iter().collect()))
+    }
+
+    fn is_shallow(&self, repo: &RepoName) -> Result<bool, RepoError> {
+        Ok(self.read(repo, &["rev-parse", "--is-shallow-repository"])?.trim() == "true")
     }
 
     fn has_commit(&self, repo: &RepoName, sha: &str) -> Result<bool, RepoError> {

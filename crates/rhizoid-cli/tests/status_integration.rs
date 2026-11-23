@@ -343,8 +343,38 @@ fn origin_is_asked_even_when_the_clone_tracks_none_of_its_topics() {
         of(&f, "branch-origin"),
         [
             "behind: topic/a is not origin's, whose commit the clone does not have (fetch it): assemble would take the local one",
-            "moved-by-hand: 1 topic branches are only in this clone, not on origin: topic/mine",
+            "current: 1 topic branches are only in this clone, not on origin (not shared yet): topic/mine",
             "current: 1 topic branches are origin's",
         ]
+    );
+}
+
+#[test]
+fn in_a_shallow_clone_a_release_it_was_never_given_is_not_known_yet() {
+    let w = world();
+    let upstream = w.root.join("upstream");
+    let ok =
+        Command::new("git").args(["clone", "-q"]).arg(&w.repo).arg(&upstream).status().unwrap();
+    assert!(ok.success());
+    commit(&upstream, "base.txt", "1.2\n");
+    git(&upstream, &["tag", "-a", "-m", "v1.2", "v1.2"]);
+    let shallow = w.root.join("acme/shallow");
+    let url = format!("file://{}", w.repo.display());
+    let ok = Command::new("git")
+        .args(["clone", "-q", "--depth", "1", "--no-single-branch", &url])
+        .arg(&shallow)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    git(&shallow, &["branch", "-q", "topic/a", "origin/topic/a"]);
+    std::fs::write(
+        &w.graph,
+        format!("[[integration]]\nrepo = \"acme/shallow\"\ntopics = [\"topic/ITEM\"]\nreleases = \"{}\"\n", upstream.display()),
+    )
+    .unwrap();
+    let (_, f) = w.status();
+    assert_eq!(
+        of(&f, "topic-base"),
+        ["not-known-yet: topic/a: the newest release, v1.2, is not in this shallow clone - whether topic/a is on it is not known yet"]
     );
 }
