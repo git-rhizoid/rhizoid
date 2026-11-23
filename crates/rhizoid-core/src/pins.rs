@@ -185,6 +185,10 @@ pub struct Pin {
     pub latest: String,
     /// The one job that moves it, as its edge names it.
     pub moved_by: String,
+    /// For a tool pin: each other place (`FILE:LINE`) its tag name is written, outside its pin file and its `also`
+    /// files - a pin bump would move only one copy of.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub copies: Vec<String>,
     /// The tool, for a tool pin: where to find it in the graph.
     #[serde(skip)]
     pub tool: Option<usize>,
@@ -202,6 +206,81 @@ impl Pin {
     /// Whether `rhizoid bump` is the one that moves it.
     pub fn moved_by_bump(&self) -> bool {
         self.moved_by == crate::graph::BUMP_MOVER
+    }
+}
+
+/// Each other place (`FILE:LINE`) a tool pin's tag name (its prefix and the release it pins) is written in the follower
+/// at `rev`, outside the pin file and the files bump commits with it (`also`): one pin, one place (decision
+/// 2026-11-23-every-pin-one-pushed-mover, google-walleye-lab #790).
+pub fn copies(
+    t: &crate::graph::Tool,
+    follower: &RepoName,
+    pinned: &str,
+    repos: &dyn crate::Repos,
+    rev: &str,
+) -> Result<Vec<String>, RepoError> {
+    // a bare version is no tag name: it would be found in every lock file
+    if t.tag_prefix.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tag = format!("{}{pinned}", t.tag_prefix);
+    let plain = |p: &str| p.strip_prefix("./").unwrap_or(p).to_string();
+    let (pin, also): (String, Vec<String>) =
+        (plain(&t.pin), t.also.iter().map(|a| plain(a)).collect());
+    Ok(repos
+        .grep(follower, rev, &tag)?
+        .into_iter()
+        .filter(|(path, _, text)| *path != pin && !also.contains(path) && names_tag(text, &tag))
+        .map(|(path, line, _)| format!("{path}:{line}"))
+        .collect())
+}
+
+/// Whether `text` names the tag `tag` itself, not a longer one that starts or ends with it: `lpoco-v0.17.1` is not
+/// in `lpoco-v0.17.10`, `lpoco-v0.17.1-cut.2`, `lpoco-v0.17.1.1` or `xlpoco-v0.17.1`.
+fn names_tag(text: &str, tag: &str) -> bool {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(tag).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let mut after = text[at + tag.len()..].chars();
+        let (next, then) = (after.next(), after.next());
+        let starts = !before.is_some_and(|c| word(c) || c == '-' || c == '.');
+        let ends = match (next, then) {
+            (None, _) => true,
+            (Some(c), _) if word(c) => false,
+            (Some('-' | '.' | '+'), Some(c)) => !word(c),
+            _ => true,
+        };
+        starts && ends
+    })
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::names_tag;
+
+    #[test]
+    fn a_tag_name_is_found_whole_never_inside_a_longer_one() {
+        let tag = "lpoco-v0.17.1";
+        for yes in [
+            "lpoco-v0.17.1",
+            "uses: lpoco-v0.17.1\n",
+            "\"lpoco-v0.17.1\"",
+            "at lpoco-v0.17.1.",
+            "(lpoco-v0.17.1)",
+        ] {
+            assert!(names_tag(yes, tag), "{yes}");
+        }
+        for no in [
+            "lpoco-v0.17.10",
+            "lpoco-v0.17.1-cut.2",
+            "lpoco-v0.17.1.1",
+            "xlpoco-v0.17.1",
+            "a-lpoco-v0.17.1",
+            "lpoco-v0.17.1+build",
+        ] {
+            assert!(!names_tag(no, tag), "{no}");
+        }
+        assert!(names_tag("lpoco-v0.17.10 then lpoco-v0.17.1", tag), "any of its places");
     }
 }
 
@@ -227,12 +306,18 @@ pub fn plan(graph: &crate::Graph, repos: &dyn crate::Repos) -> Result<Vec<Pin>, 
         };
         for f in &t.followers {
             let text = repos.file(f, rev, &t.pin)?.unwrap_or_default();
+            let pinned = read_pin(t, f, &text)?;
+            let copies = match &pinned {
+                Some(p) => copies(t, f, p, repos, rev)?,
+                None => Vec::new(),
+            };
             pins.push(Pin {
                 follower: f.clone(),
                 kind: Kind::Tool,
                 name: t.name.clone(),
                 file: t.pin.clone(),
-                pinned: read_pin(t, f, &text)?,
+                pinned,
+                copies,
                 latest: newest.clone(),
                 moved_by: t.moved_by.clone(),
                 tool: Some(i),
@@ -255,6 +340,7 @@ pub fn plan(graph: &crate::Graph, repos: &dyn crate::Repos) -> Result<Vec<Pin>, 
                 pinned: table.get("version").and_then(|v| v.as_str()).map(str::to_string),
                 latest: newest.clone(),
                 moved_by: s.moved_by.clone(),
+                copies: Vec::new(),
                 tool: None,
                 slice: Some(i),
             });

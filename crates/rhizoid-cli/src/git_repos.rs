@@ -69,6 +69,23 @@ impl<'a> GitRepos<'a> {
     }
 }
 
+/// The hits `git grep -n --null` printed at `rev`: `REV:PATH`, NUL, the line number, NUL, the line, newline. Read
+/// field by field, so a path that holds a newline or a colon is still one path; the line itself holds no newline.
+fn grep_hits(out: &str, rev: &str) -> Vec<(String, u64, String)> {
+    let prefix = format!("{rev}:");
+    let mut hits = Vec::new();
+    let mut fields = out.split('\0');
+    let mut head = fields.next().unwrap_or("").to_string();
+    while let (Some(line), Some(rest)) = (fields.next(), fields.next()) {
+        let (text, next) = rest.split_once('\n').unwrap_or((rest, ""));
+        if let (Some(path), Ok(n)) = (head.strip_prefix(&prefix), line.parse()) {
+            hits.push((path.to_string(), n, text.to_string()));
+        }
+        head = next.to_string();
+    }
+    hits
+}
+
 /// What a `git fetch --porcelain --tags` that may refuse tags ended with: the tags it refused (none when it
 /// succeeded), or `None` when it failed for any other reason. git ends 1 for a refused tag and says nothing on
 /// stderr; a refused ref that is not a tag, anything on stderr or any other end is a failure of its own.
@@ -197,6 +214,23 @@ impl Repos for GitRepos<'_> {
 
     fn fetch_findings(&self) -> Vec<Finding> {
         self.moved.borrow().clone()
+    }
+
+    fn grep(
+        &self,
+        repo: &RepoName,
+        rev: &str,
+        text: &str,
+    ) -> Result<Vec<(String, u64, String)>, RepoError> {
+        // one record per hit: REV:PATH, NUL, LINE, NUL, the line; git ends 1 when nothing matches
+        let args = ["grep", "-n", "-F", "-I", "--null", "-e", text, rev, "--"];
+        let out = git(&self.clone_dir(repo)?, &args)?;
+        match out.status.code() {
+            Some(0) => {}
+            Some(1) if stderr(&out).is_empty() => return Ok(Vec::new()),
+            _ => return Err(RepoError::Failed(format!("{repo}: {}", failure(&args, &out)))),
+        }
+        Ok(grep_hits(&String::from_utf8_lossy(&out.stdout), rev))
     }
 }
 
@@ -404,6 +438,19 @@ mod tests {
         assert_eq!(fetched_tags(&output(1, "", "")), None, "refusing nothing");
         let killed = Output { status: std::process::ExitStatus::from_raw(9), ..output(1, tag, "") };
         assert_eq!(fetched_tags(&killed), None, "a signal");
+    }
+
+    #[test]
+    fn grep_hits_are_read_field_by_field() {
+        let out = "origin/main:a.md\x002\x00uses v1: here\norigin/main:odd\nname:x\x0010\x00v1\n";
+        assert_eq!(
+            grep_hits(out, "origin/main"),
+            vec![
+                ("a.md".to_string(), 2, "uses v1: here".to_string()),
+                ("odd\nname:x".to_string(), 10, "v1".to_string()),
+            ]
+        );
+        assert_eq!(grep_hits("", "origin/main"), vec![]);
     }
 
     #[test]

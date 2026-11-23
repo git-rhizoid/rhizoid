@@ -135,6 +135,25 @@ impl Repos for World {
     fn level(&self, _: &Remote, _: &str, _: &str) -> Level {
         self.level.clone().unwrap_or_else(|| Level::Unknown("the fixture says nothing".into()))
     }
+    fn grep(
+        &self,
+        repo: &RepoName,
+        rev: &str,
+        text: &str,
+    ) -> Result<Vec<(String, u64, String)>, RepoError> {
+        self.file(repo, rev, "")?;
+        let mut hits = Vec::new();
+        for ((r, v, path), body) in &self.files {
+            if r == repo.as_str() && v == rev {
+                for (n, line) in body.lines().enumerate() {
+                    if line.contains(text) {
+                        hits.push((path.clone(), n as u64 + 1, line.to_string()));
+                    }
+                }
+            }
+        }
+        Ok(hits)
+    }
 }
 
 pub fn graph() -> Graph {

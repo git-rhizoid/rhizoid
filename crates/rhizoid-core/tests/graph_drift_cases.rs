@@ -286,6 +286,14 @@ fn a_clone_that_is_missing_stops_the_report() {
         fn level(&self, _: &rhizoid_core::graph::Remote, _: &str, _: &str) -> rhizoid_core::Level {
             rhizoid_core::Level::Unknown("offline".into())
         }
+        fn grep(
+            &self,
+            r: &rhizoid_core::RepoName,
+            _: &str,
+            _: &str,
+        ) -> Result<Vec<(String, u64, String)>, RepoError> {
+            Err(RepoError::NoClone(r.to_string()))
+        }
     }
     let e = status(&graph(), &NoClones).unwrap_err();
     assert!(matches!(e, RepoError::NoClone(_)), "{e}");
@@ -584,4 +592,29 @@ fn a_why_entry_with_a_dotted_bare_key_is_named_in_the_error() {
     let w = surya_why("tables.toml = \"ours\"\n");
     let e = status(&graph(), &w).unwrap_err().to_string();
     assert!(e.contains("[why] tables") && e.contains("needs quotes"), "{e}");
+}
+
+#[test]
+fn a_tool_pins_tag_name_written_in_a_second_file_is_named_with_its_line() {
+    let mut w = World::current();
+    let fs = run(&w);
+    let f = one(&fs, LAB_MACHINE, Check::PinCopies);
+    assert_eq!(f.verdict, Verdict::Current, "{f}");
+    w.put(
+        LAB_MACHINE,
+        MAIN,
+        "procedures/install.md",
+        "# install\nuses lpoco-v0.17.1 from lab-tools\n",
+    );
+    let fs = run(&w);
+    let f = one(&fs, LAB_MACHINE, Check::PinCopies);
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(f.is_drift() && f.detail.contains("procedures/install.md:2"), "{f}");
+}
+
+#[test]
+fn a_longer_tag_that_starts_with_the_pins_is_no_copy() {
+    let mut w = World::current();
+    w.put(LAB_MACHINE, MAIN, "CHANGELOG.md", "lpoco-v0.17.10 and lpoco-v0.17.1-cut.2\n");
+    assert_eq!(one(&run(&w), LAB_MACHINE, Check::PinCopies).verdict, Verdict::Current);
 }

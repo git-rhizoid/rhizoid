@@ -515,12 +515,34 @@ impl Cx<'_> {
                 })?,
             None => self.latest(&t.source, &t.tag_prefix)?,
         };
+        let mut one_place = None;
+        if let Some(p) = &pinned {
+            let copies = crate::pins::copies(t, follower, p, self.repos, rev)?;
+            let tag = format!("{}{p}", t.tag_prefix);
+            one_place = Some(if copies.is_empty() {
+                edge(Check::PinCopies).current(format!("{tag} is written only in {}", t.pin))
+            } else {
+                let shown: Vec<&str> = copies.iter().take(10).map(String::as_str).collect();
+                let more = copies.len().saturating_sub(shown.len());
+                let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+                let mover = if t.moved_by == crate::graph::BUMP_MOVER {
+                    "bump refuses to move one copy of several".to_string()
+                } else {
+                    format!("{} would move one copy of several", t.moved_by)
+                };
+                edge(Check::PinCopies).by_hand(format!(
+                    "{tag} is also written in {}{more}: {mover}",
+                    shown.join(", ")
+                ))
+            });
+        }
         out.push(match pinned {
             Some(p) if p == latest => edge(Check::ToolPin).current(format!("{} {p}", t.name)),
             Some(p) => edge(Check::ToolPin).behind(format!("pins {} {p}, latest {latest}", t.name)),
             None => edge(Check::ToolPin)
                 .behind(format!("{} names no {} version; latest {latest}", t.pin, t.name)),
         });
+        out.extend(one_place);
         if let Some(l) = &t.listed_in {
             let list = self.repos.file(&l.repo, rev, &l.file)?.ok_or_else(|| {
                 RepoError::Failed(format!(

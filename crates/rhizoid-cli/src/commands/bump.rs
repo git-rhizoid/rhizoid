@@ -67,7 +67,7 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
         // a pin another job moves is listed, never moved here: each pin has one mover
         if ask.now && !row.pin.current() && row.pin.moved_by_bump() {
             // one pin's failure is its own: the others are still bumped, and every one is reported
-            match bump_one(ask, &graph, &row.pin) {
+            match bump_unless_copied(ask, &graph, &row.pin) {
                 Ok(outcome) => {
                     row.state = match &outcome {
                         Bumped::Bumped { .. } => "bumped",
@@ -102,6 +102,19 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
         "bumped" => !matches!(&r.bump, Some(Bumped::Bumped { pr_error: Some(_), .. })),
         _ => false,
     }))
+}
+
+/// A pin whose tag name is written in more places than its pin file is refused: bump would move one copy of several.
+fn bump_unless_copied(ask: &Ask, graph: &Graph, pin: &Pin) -> Result<Bumped, String> {
+    if pin.copies.is_empty() {
+        return bump_one(ask, graph, pin);
+    }
+    Ok(Bumped::Refused {
+        why: format!(
+            "its tag name is also written in {}: move every copy to one place, then bump",
+            pin.copies.join(", ")
+        ),
+    })
 }
 
 fn bump_one(ask: &Ask, graph: &Graph, pin: &Pin) -> Result<Bumped, String> {
@@ -140,6 +153,9 @@ fn render(rows: &[Row], json: bool) -> String {
         let mut put = |key: String, v: &str| out.push_str(&format!("{key}={v}\n"));
         put(k("follower"), r.pin.follower.as_str());
         put(k("moved_by"), &r.pin.moved_by);
+        if !r.pin.copies.is_empty() {
+            put(k("copies"), &r.pin.copies.join(" "));
+        }
         put(
             k("kind"),
             match r.pin.kind {

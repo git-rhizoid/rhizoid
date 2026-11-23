@@ -51,6 +51,8 @@ pub enum Check {
     ToolPin,
     /// The follower is on the list of repositories whose tool pin a job moves.
     ToolListed,
+    /// A tool pin's tag name is written in one place: its pin file (and the files committed with it).
+    PinCopies,
     /// A fork's tracking branch against its upstream's head.
     ForkTrack,
     /// A repository's branch and tag names against the scheme its graph gives.
@@ -80,6 +82,7 @@ impl Check {
             Check::LayerEqual => "layer-equal",
             Check::ToolPin => "tool-pin",
             Check::ToolListed => "tool-listed",
+            Check::PinCopies => "pin-copies",
             Check::ForkTrack => "fork-track",
             Check::NameScheme => "name-scheme",
             Check::TopicBase => "topic-base",
