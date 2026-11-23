@@ -6,7 +6,7 @@
 use crate::git_cli::{GitCli, Programs};
 use crate::git_repos::GitRepos;
 use rhizoid_core::pins::{bump, bump_slice, plan, BumpAt, Bumped, Kind, Pin};
-use rhizoid_core::Graph;
+use rhizoid_core::{Graph, Repos};
 use std::path::PathBuf;
 
 /// What bump was asked, with every default already decided.
@@ -84,7 +84,17 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
         }
         rows.push(row);
     }
-    crate::commands::status::write_report(&mut std::io::stdout().lock(), &render(&rows, ask.json))?;
+    let mut report = render(&rows, ask.json);
+    // a tag origin moved that a clone holds as it was is kept and said: after the pins in the text report, on
+    // stderr beside the JSON one, whose stdout stays the pins; the exit still says only how the pins stand
+    for (i, finding) in repos.fetch_findings().iter().enumerate() {
+        if ask.json {
+            eprintln!("rhizoid: {finding}");
+        } else {
+            report.push_str(&format!("finding.{}={finding}\n", i + 1));
+        }
+    }
+    crate::commands::status::write_report(&mut std::io::stdout().lock(), &report)?;
     Ok(rows.iter().all(|r| match r.state {
         "current" | "branch-exists" => true,
         "bumped" => !matches!(&r.bump, Some(Bumped::Bumped { pr_error: Some(_), .. })),

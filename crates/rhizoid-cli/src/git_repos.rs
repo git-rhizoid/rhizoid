@@ -3,7 +3,9 @@
 //! Git runs with `LC_ALL=C`, so what it says on stderr is what this reads it as.
 
 use rhizoid_core::graph::{Remote, RepoName};
-use rhizoid_core::{Graph, IntegrationReads, Level, RepoError, Repos, Worktree};
+use rhizoid_core::{
+    Check, Finding, Graph, IntegrationReads, Level, RepoError, Repos, Verdict, Worktree,
+};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -14,11 +16,18 @@ pub struct GitRepos<'a> {
     graph: &'a Graph,
     fetch: bool,
     fetched: RefCell<BTreeSet<RepoName>>,
+    moved: RefCell<Vec<Finding>>,
 }
 
 impl<'a> GitRepos<'a> {
     pub fn new(root: &Path, graph: &'a Graph, fetch: bool) -> Self {
-        GitRepos { root: root.to_path_buf(), graph, fetch, fetched: RefCell::default() }
+        GitRepos {
+            root: root.to_path_buf(),
+            graph,
+            fetch,
+            fetched: RefCell::default(),
+            moved: RefCell::default(),
+        }
     }
 
     fn clone_dir(&self, repo: &RepoName) -> Result<PathBuf, RepoError> {
@@ -27,22 +36,84 @@ impl<'a> GitRepos<'a> {
             return Err(RepoError::NoClone(dir.display().to_string()));
         }
         if self.fetch && self.fetched.borrow_mut().insert(repo.clone()) {
-            // Branches pruned, then tags fetched without pruning: a tag made here (an int tag) stays.
-            for args in [
-                ["fetch", "-q", "--prune", "--no-prune-tags", "origin"],
-                ["fetch", "-q", "--tags", "--no-prune-tags", "origin"],
-            ] {
-                let out = git(&dir, &args)?;
-                if !out.status.success() {
-                    return Err(RepoError::Failed(format!(
-                        "{repo}: git fetch failed: {}",
-                        stderr(&out)
-                    )));
-                }
-            }
+            self.fetch_clone(repo, &dir)?;
         }
         Ok(dir)
     }
+
+    /// Branches pruned, then tags fetched without pruning and never forced: a tag made here (an int tag)
+    /// stays, and a tag `origin` moved that the clone holds as it was is kept and becomes a finding - a
+    /// silent clobber would hide the drift.
+    fn fetch_clone(&self, repo: &RepoName, dir: &Path) -> Result<(), RepoError> {
+        let branches = ["fetch", "--prune", "--no-prune-tags", "origin"];
+        let out = git(dir, &branches)?;
+        if !out.status.success() {
+            return Err(RepoError::Failed(format!("{repo}: {}", failure(&branches, &out))));
+        }
+        let tags = ["fetch", "--porcelain", "--tags", "--no-prune-tags", "origin"];
+        let out = git(dir, &tags)?;
+        let Some(moved) = fetched_tags(&out) else {
+            return Err(RepoError::Failed(format!("{repo}: {}", failure(&tags, &out))));
+        };
+        self.moved.borrow_mut().extend(moved.into_iter().map(|(tag, here, theirs)| Finding {
+            follower: repo.to_string(),
+            source: "origin".to_string(),
+            check: Check::TagOrigin,
+            verdict: Verdict::MovedByHand,
+            carried_by: None,
+            detail: format!(
+                "tag {tag} is {here} here and {theirs} on origin: kept as it is here, never clobbered (move one of them on purpose)"
+            ),
+        }));
+        Ok(())
+    }
+}
+
+/// What a `git fetch --porcelain --tags` that may refuse tags ended with: the tags it refused (none when it
+/// succeeded), or `None` when it failed for any other reason. git ends 1 for a refused tag and says nothing on
+/// stderr; a refused ref that is not a tag, anything on stderr or any other end is a failure of its own.
+fn fetched_tags(out: &Output) -> Option<Vec<(String, String, String)>> {
+    if out.status.success() {
+        return Some(Vec::new());
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let moved = moved_tags(&stdout);
+    let refused = stdout.lines().filter(|l| l.starts_with('!')).count();
+    let only_moved_tags = !moved.is_empty() && moved.len() == refused;
+    (out.status.code() == Some(1) && only_moved_tags && stderr(out).is_empty()).then_some(moved)
+}
+
+/// The tags `git fetch --porcelain` refused - one line `FLAG OLD NEW REF` per ref, `!` for a refused one -
+/// each with the clone's object and `origin`'s; `None` when a refused ref is not a tag.
+fn moved_tags(porcelain: &str) -> Vec<(String, String, String)> {
+    porcelain
+        .lines()
+        .filter_map(|line| {
+            let mut f = line.split(' ');
+            let (flag, here, theirs, name) = (f.next()?, f.next()?, f.next()?, f.next()?);
+            let tag = name.strip_prefix("refs/tags/")?;
+            (flag == "!").then(|| (tag.to_string(), here.to_string(), theirs.to_string()))
+        })
+        .collect()
+}
+
+/// A git call that failed, in git's own words: the command and what it said, never an empty message.
+pub(crate) fn failure(args: &[&str], out: &Output) -> String {
+    let said = stderr(out);
+    let said = if said.is_empty() {
+        // some git commands say why on stdout (CONFLICT, nothing to commit, a refused ref)
+        let code = out.status.code().map_or("a signal".to_string(), |c| format!("exit {c}"));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stdout: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).take(20).collect();
+        if stdout.is_empty() {
+            format!("ended with {code}, saying nothing")
+        } else {
+            format!("ended with {code}, saying on stdout: {}", stdout.join("; "))
+        }
+    } else {
+        said
+    };
+    format!("git {}: {said}", args.join(" "))
 }
 
 fn plain(command: &mut Command) -> Result<Output, RepoError> {
@@ -79,7 +150,10 @@ impl Repos for GitRepos<'_> {
         if why.contains("does not exist") || why.contains("exists on disk, but not in") {
             Ok(None)
         } else {
-            Err(RepoError::Failed(format!("{repo}: git show {rev}:{path}: {why}")))
+            Err(RepoError::Failed(format!(
+                "{repo}: {}",
+                failure(&["show", &format!("{rev}:{path}")], &out)
+            )))
         }
     }
 
@@ -87,7 +161,7 @@ impl Repos for GitRepos<'_> {
         let dir = self.clone_dir(repo)?;
         let out = git(&dir, &["tag", "-l"])?;
         if !out.status.success() {
-            return Err(RepoError::Failed(format!("{repo}: git tag: {}", stderr(&out))));
+            return Err(RepoError::Failed(format!("{repo}: {}", failure(&["tag", "-l"], &out))));
         }
         Ok(String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect())
     }
@@ -96,7 +170,10 @@ impl Repos for GitRepos<'_> {
         let reference = branch.map_or("HEAD".to_string(), |b| format!("refs/heads/{b}"));
         let out = plain(Command::new("git").args(["ls-remote", "--", &remote.url(), &reference]))?;
         if !out.status.success() {
-            return Err(RepoError::Failed(format!("{remote}: git ls-remote: {}", stderr(&out))));
+            return Err(RepoError::Failed(format!(
+                "{remote}: {}",
+                failure(&["ls-remote", "--", &remote.url(), &reference], &out)
+            )));
         }
         String::from_utf8_lossy(&out.stdout)
             .split_whitespace()
@@ -117,6 +194,10 @@ impl Repos for GitRepos<'_> {
             Err(e) => Level::Unknown(format!("cannot run gh: {e}")),
         }
     }
+
+    fn fetch_findings(&self) -> Vec<Finding> {
+        self.moved.borrow().clone()
+    }
 }
 
 impl GitRepos<'_> {
@@ -124,11 +205,7 @@ impl GitRepos<'_> {
     fn read(&self, repo: &RepoName, args: &[&str]) -> Result<String, RepoError> {
         let out = git(&self.clone_dir(repo)?, args)?;
         if !out.status.success() {
-            return Err(RepoError::Failed(format!(
-                "{repo}: git {}: {}",
-                args.join(" "),
-                stderr(&out)
-            )));
+            return Err(RepoError::Failed(format!("{repo}: {}", failure(args, &out))));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -154,9 +231,10 @@ impl IntegrationReads for GitRepos<'_> {
         match out.status.code() {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
-            _ => {
-                Err(RepoError::Failed(format!("{repo}: git merge-base {a} {b}: {}", stderr(&out))))
-            }
+            _ => Err(RepoError::Failed(format!(
+                "{repo}: {}",
+                failure(&["merge-base", "--is-ancestor", a, b], &out)
+            ))),
         }
     }
 
@@ -288,6 +366,54 @@ fn parse_compare(tsv: &str) -> Level {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn output(code: i32, stdout: &str, stderr: &str) -> Output {
+        Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        }
+    }
+
+    #[test]
+    fn a_failure_is_never_empty() {
+        let args = ["fetch", "origin"];
+        assert_eq!(failure(&args, &output(128, "", "fatal: no\n")), "git fetch origin: fatal: no");
+        assert_eq!(
+            failure(&args, &output(1, "", "")),
+            "git fetch origin: ended with exit 1, saying nothing"
+        );
+        let refused = "! a b refs/tags/v1\n  c d refs/tags/v2\n";
+        assert_eq!(
+            failure(&args, &output(1, refused, "")),
+            "git fetch origin: ended with exit 1, saying on stdout: ! a b refs/tags/v1;   c d refs/tags/v2"
+        );
+    }
+
+    #[test]
+    fn a_tag_fetch_is_accepted_only_when_it_refused_tags_and_nothing_else() {
+        let tag = "! a1 b1 refs/tags/v1\n  a2 b2 refs/tags/v2\n";
+        let moved = vec![("v1".to_string(), "a1".to_string(), "b1".to_string())];
+        assert_eq!(fetched_tags(&output(0, "  a2 b2 refs/tags/v2\n", "")), Some(vec![]));
+        assert_eq!(fetched_tags(&output(1, tag, "")), Some(moved));
+        let branch_too = format!("{tag}! a3 b3 refs/heads/main\n");
+        assert_eq!(fetched_tags(&output(1, &branch_too, "")), None, "a refused branch");
+        assert_eq!(fetched_tags(&output(1, tag, "error: cannot lock ref\n")), None, "git said why");
+        assert_eq!(fetched_tags(&output(128, tag, "")), None, "another end");
+        assert_eq!(fetched_tags(&output(1, "", "")), None, "refusing nothing");
+        let killed = Output { status: std::process::ExitStatus::from_raw(9), ..output(1, tag, "") };
+        assert_eq!(fetched_tags(&killed), None, "a signal");
+    }
+
+    #[test]
+    fn only_refused_tags_are_moved_tags() {
+        let porcelain = "! a1 b1 refs/tags/v1\n  a2 b2 refs/tags/v2\n! a3 b3 refs/heads/main\n* 0 c4 refs/tags/v3\n";
+        assert_eq!(
+            moved_tags(porcelain),
+            vec![("v1".to_string(), "a1".to_string(), "b1".to_string())]
+        );
+    }
 
     #[test]
     fn the_hosts_compare_is_read_from_the_forks_side() {

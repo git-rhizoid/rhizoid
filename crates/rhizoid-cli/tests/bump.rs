@@ -392,3 +392,62 @@ fn a_cuttings_pin_moves_to_its_newest_cut_never_to_a_plain_upstream_tag() {
     let out = w.bump(&["--only", "acme/lab"]);
     assert_eq!(value(&out, "pin.1.latest").as_deref(), Some("1.0.0-cut.10"), "{out:?}");
 }
+
+#[test]
+fn a_tag_origin_moved_is_kept_and_said_and_the_rest_of_the_fetch_goes_on() {
+    let w = world(PASSING_GATE);
+    // every source gets an origin, as a clone under ~/Projects has
+    for name in ["tools", "kb"] {
+        let clone = w.root.join("acme").join(name);
+        let bare = w.root.join("bare").join(format!("{name}.git"));
+        let ok =
+            Command::new("git").args(["clone", "-q", "--bare"]).arg(&clone).arg(&bare).status();
+        assert!(ok.unwrap().success());
+        git(&clone, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    }
+    let tools = w.root.join("acme/tools");
+    let bare = w.root.join("bare/tools.git");
+    let here = git(&tools, &["rev-parse", "lpoco-v1.0.0"]);
+    let theirs = git(&tools, &["rev-parse", "lpoco-v1.1.0"]);
+    // origin moves a release by hand, and makes a new one the clone has not fetched yet
+    git(&bare, &["tag", "-f", "lpoco-v1.0.0", &theirs]);
+    git(&bare, &["tag", "lpoco-v1.2.0", &theirs]);
+
+    let out = w.bump(&["--fetch"]);
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "the pins are behind, nothing failed: {out:?}");
+    assert_eq!(value(&out, "pin.1.latest").as_deref(), Some("1.2.0"), "{report}");
+    let finding = value(&out, "finding.1").expect("the moved tag is a finding");
+    assert!(finding.starts_with("moved-by-hand acme/tools <- origin  tag-origin: "), "{finding}");
+    assert!(finding.contains(&format!("lpoco-v1.0.0 is {here} here and {theirs} on origin")));
+    assert_eq!(git(&tools, &["rev-parse", "lpoco-v1.0.0"]), here, "never clobbered");
+
+    // status says the same, as drift
+    let out = Command::new(bin())
+        .args(["status", "--fetch", "--graph"])
+        .arg(&w.graph)
+        .arg("--root")
+        .arg(&w.root)
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        report
+            .lines()
+            .any(|l| l
+                .starts_with("moved-by-hand acme/tools <- origin  tag-origin: tag lpoco-v1.0.0")),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_failed_fetch_names_git_and_what_it_said() {
+    // the sources here have no origin to fetch from
+    let w = world(PASSING_GATE);
+    let out = w.bump(&["--fetch"]);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(said.contains("git fetch --prune --no-prune-tags origin: "), "{said}");
+    assert!(said.contains("does not appear to be a git repository"), "git's own words: {said}");
+}
