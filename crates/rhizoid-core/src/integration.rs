@@ -500,6 +500,17 @@ mod tests {
     }
 
     #[test]
+    fn the_readme_example_edge_reads() {
+        let readme = include_str!("../../../README.md");
+        let start =
+            readme.find("```toml\n[[integration]]").expect("the README shows an integration edge")
+                + 8;
+        let end = start + readme[start..].find("```").unwrap();
+        let g = Graph::parse(&readme[start..end]).unwrap();
+        assert!(g.integrations[0].assembled.as_ref().unwrap().matches("candidate/release/1"));
+    }
+
+    #[test]
     fn an_edge_names_only_its_repository_and_checks_only_what_it_is_given() {
         let g = Graph::parse("[[integration]]\nrepo = \"a/b\"\n").unwrap();
         let edge = &g.integrations[0];

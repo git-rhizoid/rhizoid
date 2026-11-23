@@ -521,3 +521,15 @@ fn the_list_file_has_no_default() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(String::from_utf8_lossy(&out.stderr).contains("--lists FILE"), "{out:?}");
 }
+
+#[test]
+fn done_refuses_a_worktree_with_commits_beyond_its_tag() {
+    let w = world();
+    let out = w.assemble(&["two"]);
+    let worktree = PathBuf::from(value(&out, "worktree").unwrap());
+    commit(&worktree, &[("c.txt", "committed in the worktree\n")], "beyond");
+    let refused = w.done(&["int/dev/two/v1/1"]);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("commits beyond"), "{refused:?}");
+    assert!(worktree.is_dir());
+}

@@ -39,8 +39,8 @@ tags, against what the graph gives it - every name is the graph's, none is rhizo
 repo = "acme/app"
 release_prefix = "v"                     # release tags: this, then a digit (v1.4, v1.5-rc2); always in the scheme
 topics = ["feature/ITEM", "fix/ITEM/BASE"]   # the branches lists merge; BASE says what one is based on
-assembled = "candidate/LIST-N"           # the shape of the tags assemble makes here
-scheme = { branches = ["main", "feature/ITEM", "fix/ITEM/BASE"], tags = ["candidate/LIST-N"] }
+assembled = "candidate/LIST/N"           # the shape of the tags assemble makes here
+scheme = { branches = ["main", "feature/ITEM", "fix/ITEM/BASE"], tags = ["candidate/LIST/N"] }
 ```
 
 A pattern is `/`-separated parts, each a literal with a CAPITAL placeholder at its end (`N`: digits; any other: one
@@ -73,7 +73,7 @@ format, and each user keeps its own: every name in it is the file's.
 
 ```toml
 name = "app"                        # optional: {name} in the tag (`device` is read as name, from files written before)
-tag = "candidate/{list}-{n}"        # optional: {name}, {list}, {base} and one {n}; default int/{name}/{list}/{base}/{n}
+tag = "candidate/{list}/{n}"        # optional: {name}, {list}, {base} and one {n}; default int/{name}/{list}/{base}/{n}
                                     #   (int/{list}/{base}/{n} without a name)
 branches = ["feature/ITEM", "fix/ITEM/BASE"]   # optional: the branches a list may name; with none, any branch
 
@@ -134,7 +134,7 @@ entry.1.merged=merged
 feature.login=...                   (one per entry: its branch with . for /, = its sha)
 tested=...                          (the known-good entries' tested commits, space-separated)
 worktree=/home/you/.local/share/agent-worktrees/app/rhizoid/candidate-release-1
-tag=candidate/release-1
+tag=candidate/release/1
 tag_sha=...
 commit=...
 ```

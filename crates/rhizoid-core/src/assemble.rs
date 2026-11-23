@@ -190,7 +190,7 @@ fn name_part(s: &str, what: &str) -> Result<(), String> {
         || s.ends_with(".lock")
         || s.contains("..")
         || s.contains("@{")
-        || s.chars().any(|c| c.is_control() || " ~^:?*[\\=".contains(c));
+        || s.chars().any(|c| c.is_control() || " ~^:?*[\\={}".contains(c));
     if bad {
         Err(format!("{what} {s:?} cannot be part of a tag name"))
     } else {
@@ -235,6 +235,18 @@ impl TagTemplate {
         if rest.contains('}') || numbers != 1 {
             return Err(format!("tag {text:?} needs exactly one {{n}}"));
         }
+        if text.contains("}{n}") || text.contains("{n}{") {
+            return Err(format!(
+                "tag {text:?}: {{n}} must not touch another place - put text between them"
+            ));
+        }
+        let sample = text
+            .replace("{name}", "x")
+            .replace("{list}", "x")
+            .replace("{base}", "x")
+            .replace("{n}", "1");
+        tag_name(&sample)
+            .map_err(|_| format!("tag {text:?}: its text is not what a tag name can carry"))?;
         Ok(TagTemplate(text.to_string()))
     }
 
@@ -657,6 +669,13 @@ pub fn done(git: &impl GitPort, tag: &str, force: bool) -> Result<String, Assemb
     let worktree = worktree_of(git, tag)?.ok_or_else(|| {
         AssembleError(format!("no worktree of {tag} (rhizoid assemble locks each one it tags)"))
     })?;
+    let at_tag = worktree.head.is_some() && worktree.head == git.commit(tag)?;
+    if !at_tag && !force {
+        return Err(AssembleError(format!(
+            "refused: {} has commits beyond {tag} - --force removes it anyway, and them",
+            worktree.path
+        )));
+    }
     match worktree.clean {
         Some(true) => {}
         _ if force => {}
@@ -706,13 +725,16 @@ pub fn recipe_of(message: &str) -> Option<BTreeMap<String, String>> {
     if !message.starts_with(TAG_MESSAGE_START) {
         return None;
     }
-    Some(
-        message
-            .lines()
-            .filter_map(|l| l.split_once('='))
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-    )
+    let mut recipe: BTreeMap<String, String> = message
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    // a recipe of v0.1.1 named its name `device`
+    if let Some(device) = recipe.remove("device") {
+        recipe.entry("name".to_string()).or_insert(device);
+    }
+    Some(recipe)
 }
 
 /// The newest existing tag whose recipe says the same went in (base, every entry with its sha, what it is for
@@ -887,6 +909,7 @@ mod tests {
         assert!(entry("", "wip/x").is_ok());
         assert!(entry("", "has space").is_err());
         assert!(entry("", "a=b").is_err(), "a report key cannot carry =");
+        assert!(Lists::parse("[lists.\"{n}\"]\nbase = \"v1\"\n[[lists.\"{n}\".entries]]\nbranch = \"x\"\nfor = \"x\"\nstate = \"trying\"\n").is_err(), "braces in a name");
         let shapes = "branches = [\"topic/ITEM\", \"backport/ITEM/BASE\"]";
         assert!(entry(shapes, "topic/a").is_ok());
         assert!(entry(shapes, "wip/x").unwrap_err().contains("topic/ITEM, backport/ITEM/BASE"));
@@ -933,6 +956,11 @@ mod tests {
             .unwrap_err()
             .contains("not name, list, base or n"));
         assert!(TagTemplate::parse("x/{n", true).is_err());
+        assert!(TagTemplate::parse("x/{list}{n}", false).unwrap_err().contains("must not touch"));
+        assert!(TagTemplate::parse("-x/{list}/{n}", false)
+            .unwrap_err()
+            .contains("not what a tag name"));
+        assert!(TagTemplate::parse("x*/{list}/{n}", false).is_err());
     }
 
     #[test]
@@ -985,6 +1013,13 @@ mod tests {
         let taken = |p: &Path| p == Path::new("/w/int-l-b-1") || p == Path::new("/w/int-l-b-1-2");
         assert_eq!(default_worktree(home, "int/l/b/1", taken), PathBuf::from("/w/int-l-b-1-3"));
         assert_eq!(default_worktree(home, "int/l/b/2", taken), PathBuf::from("/w/int-l-b-2"));
+    }
+
+    #[test]
+    fn a_recipe_written_with_device_reads_as_name() {
+        let r = recipe_of("rhizoid assemble: d/l onto b\n\ndevice=d\nlist=l\n").unwrap();
+        assert_eq!(r.get("name").map(String::as_str), Some("d"));
+        assert!(!r.contains_key("device"));
     }
 
     #[test]
