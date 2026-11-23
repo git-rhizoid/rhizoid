@@ -539,7 +539,7 @@ fn bump_landing(w: &World, land: &str, args: &[&str]) -> Output {
     std::fs::write(&w.graph, format!("{graph}{land}")).unwrap();
     let fake = w.root.join("fakebin");
     std::fs::create_dir_all(&fake).unwrap();
-    std::fs::write(fake.join("gh"), "#!/bin/sh\necho https://example.org/pr/1\n").unwrap();
+    std::fs::write(fake.join("gh"), "#!/bin/sh\n[ \"$1 $2\" = \"pr list\" ] && { echo '[]'; exit 0; }\necho https://example.org/pr/1\n").unwrap();
     assert!(Command::new("chmod").arg("+x").arg(fake.join("gh")).status().unwrap().success());
     let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
     Command::new(bin())
@@ -658,4 +658,101 @@ fn a_standing_refusal_beside_a_failing_gate_still_ends_1() {
     assert_eq!(value(&out, "pin.1.state").as_deref(), Some("refused"));
     assert_eq!(value(&out, "pin.2.state").as_deref(), Some("gated-out"));
     assert_eq!(out.status.code(), Some(1), "the gate failed in this run: {out:?}");
+}
+
+/// A stand-in gh: `pr create` answers an address naming the branch and logs its argv; `pr list` answers the open
+/// pull requests from a file; `pr close` logs. Its folder goes first on PATH.
+fn fake_gh(w: &World) -> String {
+    let fake = w.root.join("fakegh");
+    std::fs::create_dir_all(&fake).unwrap();
+    let log = w.root.join("gh.log");
+    let open = w.root.join("open.json");
+    std::fs::write(&open, "[]").unwrap();
+    std::fs::write(
+        fake.join("gh"),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncase \"$1 $2\" in\n\
+             'pr create') while [ $# -gt 0 ]; do [ \"$1\" = --head ] && b=$2; shift; done; echo \"https://example.org/pr/$b\" ;;\n\
+             'pr list') cat '{open}' ;;\nesac\n",
+            log = log.display(),
+            open = open.display()
+        ),
+    )
+    .unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(fake.join("gh")).status().unwrap().success());
+    format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default())
+}
+
+fn bump_with_path(w: &World, path: &str, args: &[&str]) -> Output {
+    Command::new(bin())
+        .args(["bump", "now"])
+        .args(args)
+        .arg("--graph")
+        .arg(&w.graph)
+        .arg("--root")
+        .arg(&w.root)
+        .env("AGENT_WORKTREES", w.root.join("worktrees"))
+        .env("PATH", path)
+        .envs(IDENTITY)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn a_failed_gate_is_a_draft_pull_request_a_person_sees_and_a_newer_release_replaces_it() {
+    let w = world(r#"["sh", "-c", "echo 'test result: FAILED. 1 failed'; exit 101"]"#);
+    let path = fake_gh(&w);
+    let log = w.root.join("gh.log");
+
+    let out = bump_with_path(&w, &path, &["--pr", "--only", "acme/lab"]);
+    assert_eq!(out.status.code(), Some(1), "a gate failed in this run: {out:?}");
+    assert_eq!(value(&out, "pin.2.state").as_deref(), Some("gated-out"));
+    assert_eq!(value(&out, "pin.2.draft").as_deref(), Some("yes"));
+    assert_eq!(value(&out, "pin.2.branch").as_deref(), Some("rhizoid/bump/lpoco-attended-0.2.0"));
+    let said = std::fs::read_to_string(&log).unwrap();
+    let draft = said.lines().find(|l| l.contains("--draft")).expect("a draft was opened");
+    assert!(draft.contains("rhizoid/bump/lpoco-attended-0.2.0"), "{draft}");
+    assert!(said.contains("Exit: 101") && said.contains("test result: FAILED. 1 failed"), "{said}");
+    assert!(git(&w.bare, &["branch", "--list", "rhizoid/*"])
+        .contains("rhizoid/bump/lpoco-attended-0.2.0"));
+    let cargo = git(&w.bare, &["show", "rhizoid/bump/lpoco-attended-0.2.0:steps/Cargo.toml"]);
+    assert!(cargo.contains("lpoco-attended-v0.2.0"), "the failed bump is committed: {cargo}");
+    assert!(
+        git(&w.bare, &["show", "main:steps/Cargo.toml"]).contains("lpoco-attended-v0.1.0"),
+        "nothing on main"
+    );
+
+    let creates = |s: &str| s.lines().filter(|l| l.starts_with("pr create")).count();
+    let before = creates(&std::fs::read_to_string(&log).unwrap());
+    let again = bump_with_path(&w, &path, &["--pr", "--only", "acme/lab"]);
+    assert_eq!(value(&again, "pin.2.state").as_deref(), Some("branch-exists"));
+    let after = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(creates(&after), before, "a second run opens nothing: {after}");
+
+    // a newer release: its draft replaces the earlier one, closed with a comment naming the new one
+    repo(&w.root.join("acme/tools"), &[("a", "3")], &["lpoco-attended-v0.3.0"]);
+    std::fs::write(
+        w.root.join("open.json"),
+        r#"[{"number":7,"headRefName":"rhizoid/bump/lpoco-attended-0.2.0"},{"number":8,"headRefName":"rhizoid/bump/lpoco-1.1.0"},{"number":9,"headRefName":"someone/else"}]"#,
+    )
+    .unwrap();
+    let newer = bump_with_path(&w, &path, &["--pr", "--only", "acme/lab"]);
+    assert_eq!(value(&newer, "pin.2.branch").as_deref(), Some("rhizoid/bump/lpoco-attended-0.3.0"));
+    assert_eq!(value(&newer, "pin.2.replaced").as_deref(), Some("#7"), "{newer:?}");
+    let said = std::fs::read_to_string(&log).unwrap();
+    let close = said.lines().find(|l| l.starts_with("pr close")).expect("the earlier one closed");
+    assert!(
+        close.starts_with("pr close 7 --comment Replaced by https://example.org/pr/rhizoid/bump/lpoco-attended-0.3.0"),
+        "{close}"
+    );
+    assert!(!said.contains("pr close 8") && !said.contains("pr close 9"), "{said}");
+}
+
+#[test]
+fn a_failed_gate_without_a_pull_request_commits_nothing_still() {
+    let w = world(r#"["sh", "-c", "exit 4"]"#);
+    let out = w.bump(&["now", "--push"]);
+    assert_eq!(value(&out, "pin.2.state").as_deref(), Some("gated-out"));
+    assert_eq!(value(&out, "pin.2.branch"), None);
+    assert_eq!(git(&w.bare, &["branch", "--list", "rhizoid/bump/lpoco-attended*"]), "");
 }

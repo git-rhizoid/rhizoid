@@ -8,7 +8,8 @@ use crate::git_cli::{GitCli, Programs};
 use crate::git_repos::GitRepos;
 use rhizoid_core::pins::{bump, bump_slice, plan, BumpAt, Bumped, Kind, Pin};
 use rhizoid_core::{Graph, Repos};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 /// What bump was asked, with every default already decided.
 pub struct Ask {
@@ -27,6 +28,11 @@ pub struct Ask {
 /// The pull request command: gh, filled from the bump's commit.
 const PR: &[&str] = &["gh", "pr", "create", "--fill", "--head", "{branch}"];
 
+/// The draft pull request command for a bump whose gate failed: gh, its title and body rhizoid's.
+const DRAFT: &[&str] = &[
+    "gh", "pr", "create", "--draft", "--head", "{branch}", "--title", "{title}", "--body", "{body}",
+];
+
 /// One pin and, with `now`, how its bump ended.
 #[derive(serde::Serialize)]
 struct Row {
@@ -37,6 +43,12 @@ struct Row {
     bump: Option<Bumped>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// The earlier pull requests of the same pin this bump's replaced, closed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    replaced: Vec<String>,
+    /// Earlier pull requests could not be read or closed: why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replace_error: Option<String>,
 }
 
 /// Print every pin; whether all is as asked.
@@ -69,6 +81,8 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
             state: if pin.current() { "current" } else { "behind" },
             bump: None,
             error: None,
+            replaced: Vec::new(),
+            replace_error: None,
             pin,
         };
         // a pin another job moves is listed, never moved here: each pin has one mover
@@ -82,6 +96,12 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
                         Bumped::GatedOut { .. } => "gated-out",
                         Bumped::Refused { .. } => "refused",
                     };
+                    // a newer bump's pull request replaces the earlier ones of the same pin
+                    if let Some((branch, url)) = opened(&outcome) {
+                        let clone = ask.root.join(graph.clone_path(&row.pin.follower));
+                        (row.replaced, row.replace_error) =
+                            replace_earlier(&clone, branch, &row.pin.latest, url);
+                    }
                     row.bump = Some(outcome);
                 }
                 Err(e) => {
@@ -104,18 +124,22 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
     }
     crate::commands::status::write_report(&mut std::io::stdout().lock(), &report)?;
     // with `now`, how the pins another job moves stand is that job's to say
-    Ok(rows.iter().filter(|r| !ask.now || r.pin.moved_by_bump()).all(|r| match r.state {
-        "current" | "branch-exists" => true,
-        "bumped" => match &r.bump {
-            Some(Bumped::Bumped { pr_error, landed, .. }) => {
-                pr_error.is_none() && (*landed || !ask.land)
+    // an earlier pull request left open is a failure of this run: the next run says branch-exists and never retries
+    Ok(rows.iter().filter(|r| !ask.now || r.pin.moved_by_bump()).all(|r| {
+        r.replace_error.is_none()
+            && match r.state {
+                "current" | "branch-exists" => true,
+                "bumped" => match &r.bump {
+                    Some(Bumped::Bumped { pr_error, landed, .. }) => {
+                        pr_error.is_none() && (*landed || !ask.land)
+                    }
+                    _ => false,
+                },
+                // refused for a standing reason status reports as drift (pin-copies): status and patrol carry it, and a
+                // run that failed at nothing is no failure - an hourly unit stays green for a known finding
+                "refused" => ask.now && !r.pin.copies.is_empty(),
+                _ => false,
             }
-            _ => false,
-        },
-        // refused for a standing reason status reports as drift (pin-copies): status and patrol carry it, and a
-        // run that failed at nothing is no failure - an hourly unit stays green for a known finding
-        "refused" => ask.now && !r.pin.copies.is_empty(),
-        _ => false,
     }))
 }
 
@@ -138,12 +162,14 @@ fn bump_one(ask: &Ask, graph: &Graph, pin: &Pin) -> Result<Bumped, String> {
     let main = git.main_clone().map_err(|e| e.to_string())?;
     let home = crate::commands::assemble::rhizoid_home(&ask.worktrees, &main)?;
     let pr: Vec<String> = PR.iter().map(|s| s.to_string()).collect();
+    let draft: Vec<String> = DRAFT.iter().map(|s| s.to_string()).collect();
     let at = BumpAt {
         rev: &graph.rev,
         home: &home,
         push: ask.push,
         pr: (ask.pr || ask.land).then_some(pr.as_slice()),
         land: if ask.land { graph.bump.land.as_deref() } else { None },
+        draft: (ask.pr || ask.land).then_some(draft.as_slice()),
     };
     match (pin.tool, pin.slice) {
         (Some(t), _) => bump(&git, &Programs, &graph.tools[t], pin, &at).map_err(|e| e.to_string()),
@@ -203,16 +229,112 @@ fn render(rows: &[Row], json: bool) -> String {
                 }
             }
             Some(Bumped::BranchExists { branch }) => put(k("branch"), branch),
-            Some(Bumped::GatedOut { exit, output }) => {
+            Some(Bumped::GatedOut { exit, output, branch, pr, pr_error }) => {
                 put(k("gate.exit"), &exit.map_or("signal".to_string(), |e| e.to_string()));
                 put(k("gate.output"), output.lines().last().unwrap_or(""));
+                if let Some(branch) = branch {
+                    put(k("branch"), branch);
+                    put(k("pushed"), "yes");
+                }
+                if let Some(pr) = pr {
+                    put(k("pr"), pr);
+                    put(k("draft"), "yes");
+                }
+                if let Some(e) = pr_error {
+                    put(k("pr_error"), e.lines().last().unwrap_or(""));
+                }
             }
             Some(Bumped::Refused { why }) => put(k("why"), why),
             None => {}
+        }
+        if !r.replaced.is_empty() {
+            put(k("replaced"), &r.replaced.join(" "));
+        }
+        if let Some(e) = &r.replace_error {
+            put(k("replace_error"), e.lines().last().unwrap_or(""));
         }
         if let Some(e) = &r.error {
             put(k("error"), e);
         }
     }
     out
+}
+
+/// The branch and pull request a bump opened, landed or not: a draft for a failed gate too.
+fn opened(outcome: &Bumped) -> Option<(&str, &str)> {
+    match outcome {
+        Bumped::Bumped { branch, pr: Some(pr), .. } => Some((branch, pr)),
+        Bumped::GatedOut { branch: Some(branch), pr: Some(pr), .. } => Some((branch, pr)),
+        _ => None,
+    }
+}
+
+/// Close the open pull requests of the same pin at an earlier release - branches `PREFIX` + another version, the
+/// prefix being this bump's branch without its release - each with a comment naming the one that replaces it.
+fn replace_earlier(
+    clone: &Path,
+    branch: &str,
+    latest: &str,
+    url: &str,
+) -> (Vec<String>, Option<String>) {
+    let mut closed = Vec::new();
+    let Some(prefix) = branch.strip_suffix(latest) else { return (closed, None) };
+    let gh = |args: &[&str]| -> Result<String, String> {
+        let out = Command::new("gh")
+            .args(args)
+            .current_dir(clone)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("cannot run gh: {e}"))?;
+        if !out.status.success() {
+            let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(format!("gh {}: {said}", args.join(" ")));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let list =
+        gh(&["pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName"]);
+    let open: Vec<serde_json::Value> = match list
+        .and_then(|l| serde_json::from_str(&l).map_err(|e| format!("gh pr list said no JSON: {e}")))
+    {
+        Ok(open) => open,
+        Err(e) => return (closed, Some(e)),
+    };
+    for pr in open {
+        let (Some(number), Some(head)) = (pr["number"].as_u64(), pr["headRefName"].as_str()) else {
+            continue;
+        };
+        let earlier = head != branch && head.strip_prefix(prefix).is_some_and(is_release);
+        if earlier {
+            let comment = format!("Replaced by {url}, the bump to {latest}.");
+            if let Err(e) = gh(&["pr", "close", &number.to_string(), "--comment", &comment]) {
+                return (closed, Some(e));
+            }
+            closed.push(format!("#{number}"));
+        }
+    }
+    (closed, None)
+}
+
+/// Whether what follows a pin's branch prefix is a release: numbers joined by dots, then the end or a suffix after
+/// `-` or `+` (`0.44.5`, `0.43.0-cut.2`) - never another pin's name (`20-1.0.0` of a tool `node-20` beside `node`).
+fn is_release(rest: &str) -> bool {
+    let head = rest.split(['-', '+']).next().unwrap_or("");
+    let parts: Vec<&str> = head.split('.').collect();
+    parts.len() >= 2 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_release;
+
+    #[test]
+    fn only_a_release_follows_a_pins_prefix() {
+        for yes in ["0.44.5", "1.0", "0.43.0-cut.2", "2.0.0+build"] {
+            assert!(is_release(yes), "{yes}");
+        }
+        for no in ["20-1.0.0", "attended-0.2.0", "1", "", "1.", "v1.0"] {
+            assert!(!is_release(no), "{no}");
+        }
+    }
 }
