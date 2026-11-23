@@ -262,3 +262,92 @@ fn without_a_config_the_names_are_the_defaults_and_there_are_no_checks() {
     assert_eq!(v["send_branch"], "send/x/v1");
     assert_eq!(v["checks"].as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn a_run_that_cannot_finish_keeps_nothing() {
+    let w = world();
+    std::fs::write(
+        &w.config,
+        "[[send.check]]\nname = \"gone\"\nrun = [\"no-such-program-anywhere\"]\n",
+    )
+    .unwrap();
+    let out = w.send("series/v1", &[]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(git(&w.repo, &["branch", "--list", "send/*"]), "");
+    assert!(!w.root.join("series/v1").exists(), "the folder it made goes too");
+    assert!(!w.root.join("worktrees/app/rhizoid/send-x-v1").exists());
+    std::fs::write(&w.config, "").unwrap();
+    assert_eq!(w.send("series/v1", &[]).status.code(), Some(0), "a rerun is not blocked");
+}
+
+#[test]
+fn a_branch_the_target_already_holds_is_nothing_to_send() {
+    let w = world();
+    let out = Command::new(bin())
+        .args(["send-back", "topic/x", "--onto", "topic/x", "--out"])
+        .arg(w.root.join("s"))
+        .arg("--repo")
+        .arg(&w.repo)
+        .env("AGENT_WORKTREES", w.root.join("worktrees"))
+        .envs(IDENTITY)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("nothing to send"), "{out:?}");
+    assert_eq!(git(&w.repo, &["tag", "-l", "topic/*"]), "");
+}
+
+#[test]
+fn commits_the_target_already_holds_are_counted_as_dropped() {
+    let w = world();
+    let first = git(&w.repo, &["rev-parse", "topic/x~1"]);
+    git(&w.repo, &["checkout", "-q", "for-next"]);
+    git(&w.repo, &["cherry-pick", &first]);
+    git(&w.repo, &["checkout", "-q", "main"]);
+    std::fs::write(&w.config, "").unwrap();
+    let out = w.send("series/v1", &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(value(&out, "dropped").as_deref(), Some("1"));
+    assert_eq!(value(&out, "patch.3"), None, "a cover letter and one patch");
+}
+
+#[test]
+fn a_persons_rebase_and_format_config_changes_neither_the_clone_nor_the_series() {
+    let w = world();
+    git(&w.repo, &["branch", "stack", "topic/x~1"]);
+    let stack = git(&w.repo, &["rev-parse", "stack"]);
+    for (k, v) in [
+        ("rebase.updateRefs", "true"),
+        ("format.signature", "SIGNATURE-LINE"),
+        ("format.to", "someone@example.org"),
+        ("format.headers", "X-Extra: yes"),
+        ("format.suffix", ".txt"),
+    ] {
+        git(&w.repo, &["config", k, v]);
+    }
+    std::fs::write(&w.config, "").unwrap();
+    let out = w.send("series/v1", &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(git(&w.repo, &["rev-parse", "stack"]), stack, "no other branch moved");
+    let patch = value(&out, "patch.2").unwrap();
+    assert!(patch.ends_with(".patch"), "{patch}");
+    let text = std::fs::read_to_string(&patch).unwrap();
+    for added in ["SIGNATURE-LINE", "someone@example.org", "X-Extra"] {
+        assert!(!text.contains(added), "{added} in {text}");
+    }
+}
+
+#[test]
+fn a_failing_recipients_command_fails_the_run_and_names_no_one() {
+    let w = world();
+    std::fs::write(
+        &w.config,
+        "[send.recipients]\nname = \"who\"\nrun = [\"sh\", \"-c\", \"echo warn >&2; echo half@example.org; exit 1\"]\n",
+    )
+    .unwrap();
+    let out = w.send("series/v1", &[]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(value(&out, "recipient.1"), None);
+    assert_eq!(value(&out, "check.1.name").as_deref(), Some("who"));
+    assert_eq!(value(&out, "local-ref"), None);
+}

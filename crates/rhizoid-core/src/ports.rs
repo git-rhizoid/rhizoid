@@ -94,6 +94,9 @@ pub trait GitPort {
         commit: &str,
     ) -> Result<(), PortError>;
 
+    /// How many commits `to` has that `from` lacks.
+    fn count(&self, from: &str, to: &str) -> Result<u64, PortError>;
+
     /// Delete the local branch `name` (`git branch -D`).
     fn delete_branch(&self, name: &str) -> Result<(), PortError>;
 

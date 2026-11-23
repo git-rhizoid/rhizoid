@@ -183,6 +183,11 @@ impl GitPort for GitCli {
         self.ok(&["worktree", "add", "-q", "-b", branch, path_arg(path)?, commit]).map(drop)
     }
 
+    fn count(&self, from: &str, to: &str) -> Result<u64, PortError> {
+        let n = self.ok(&["rev-list", "--count", &format!("{from}..{to}")])?;
+        n.trim().parse().map_err(|_| PortError(format!("git rev-list --count said {n}")))
+    }
+
     fn delete_branch(&self, name: &str) -> Result<(), PortError> {
         self.ok(&["branch", "-q", "-D", name]).map(drop)
     }
@@ -199,6 +204,8 @@ impl GitPort for GitCli {
             "rebase",
             "-q",
             "--no-autosquash",
+            "--no-update-refs",
+            "--no-rebase-merges",
             onto,
         ];
         let out = self.run(path, &args)?;
@@ -233,6 +240,14 @@ impl GitPort for GitCli {
             &base,
             "-o",
             &out,
+            // the series is what the branch says, not what a person's format.* config adds
+            "--no-signature",
+            "--no-to",
+            "--no-cc",
+            "--no-add-header",
+            "--no-from",
+            "--no-notes",
+            "--suffix=.patch",
         ];
         let range_diff = p.range_diff.as_ref().map(|r| format!("--range-diff={r}"));
         if let Some(r) = &range_diff {

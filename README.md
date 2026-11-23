@@ -159,13 +159,17 @@ and claims nothing in the cover letter: the author reads the folder and sends.
 **What it does**, in order: reads the branch (local, else `origin`'s), the target (`--onto`, the ref of the tree the
 series is for), the tested commit (`--tested`, a commit's sha, printed in full; never HEAD or a branch), and refuses an
 `--out` folder that is not empty. It numbers the version one past the branch's version tags, and rebases the branch
-onto the target in a fresh worktree on the send branch, authorship kept, nothing signed. A conflict stops it: it names
-the commit it could not replay and the paths, and keeps nothing. Then `git format-patch --cover-letter -vN --base` cuts
+onto the target in a fresh worktree on the send branch, authorship kept, nothing signed, no other branch moved
+(`--no-update-refs`), merges flattened. A conflict stops it: it names the commit it could not replay and the paths, and
+keeps nothing; a branch the target already holds is nothing to send, and commits the target already has are counted
+(`dropped=N`). Then `git format-patch --cover-letter -vN --base` cuts
 the series into `--out`, with `--range-diff` against the previous version's commits (read from that version's tag) and
 a changelog skeleton (`Changes since vN-1:`) under the cover letter's blurb. The configured checks run in order in
-the rebased tree, then the recipients command. `SEND-NOTES` beside the patches holds the base, the tested commit and
+the rebased tree, then the recipients command (its stdout lines are the recipients; a failing one fails the run).
+A person's `format.*` config (signature, to, cc, headers, from, suffix, notes) does not reach the series. `SEND-NOTES` beside the patches holds the base, the tested commit and
 every check's exit code and output. When every check passes, the version is tagged and the send branch kept; when one
-fails, the series stays to be read, and nothing else. The worktree always goes.
+fails, the series stays to be read, and nothing else. The worktree always goes, and a run that cannot finish keeps
+nothing at all.
 
 **The config** (`--config`, or `RHIZOID_CONFIG`; none: the default names and no checks) is rhizoid's own file. Its
 `[send]` section names everything ([`examples/kernel-send.toml`](examples/kernel-send.toml) is a Linux kernel tree's,
@@ -190,7 +194,7 @@ patches = true
 **Its report** is `key=value` lines, or the same as JSON with `--json`. `version=vN`, `carried-in=ID/BRANCH` (with
 `--fork ID`), `local-ref` (the version tag, when made) and `file` (the `--out` folder, as given) are an upstream
 item's fields as they are; beside them `branch`, `branch_sha`, `base`, `base_sha`, `tested`, `send_branch`,
-`patch.N`, `range_diff` (the version compared with, or `none`), `check.N.name` and `check.N.exit`, `recipient.N`, and
+`patch.N`, `dropped`, `range_diff` (the version compared with, or `none`), `check.N.name` and `check.N.exit`, `recipient.N`, and
 at a conflict `conflict.commit`, `conflict.subject` and `conflict.path.N`. It ends 0 when the version is tagged, 1 at
 a conflict or a failed check, 2 when it could not run.
 

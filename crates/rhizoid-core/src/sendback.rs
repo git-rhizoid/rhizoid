@@ -3,8 +3,8 @@
 //! checked by the commands the user configures - for any repository.
 //!
 //! Every name and every check is the user's (decision 2026-11-23-rhizoid-stays-general): the send branch and
-//! version tag templates, and the check and recipient commands, come from the config; a kernel's
-//! `get_maintainer.pl`, `checkpatch.pl --strict` and `W=1` build are one example. It never signs, re-authors,
+//! version tag templates, and the check and recipient commands, come from the config; a Linux kernel tree's
+//! checks are one example, in examples/kernel-send.toml. It never signs, re-authors,
 //! sends or pushes, and claims nothing in the cover letter beyond a changelog skeleton to fill (the author sends).
 
 use crate::assemble::next_number;
@@ -24,6 +24,7 @@ pub const DEFAULT_VERSION_TAG: &str = "{branch}/v{n}";
 
 /// rhizoid's config file: what it reads is its `[send]` section.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// The send-back section.
     #[serde(default)]
@@ -193,6 +194,9 @@ pub struct Report {
     pub send_branch: Option<String>,
     /// The folder the series is in.
     pub file: String,
+    /// Commits of the branch the rebase dropped: the target already holds them.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub dropped: u64,
     /// The files written, the cover letter first.
     pub patches: Vec<String>,
     /// The version compared with (`--range-diff`), when there is one with a recipe.
@@ -237,6 +241,9 @@ impl Report {
             put("send_branch", s);
         }
         put("file", &self.file);
+        if self.dropped > 0 {
+            put("dropped", &self.dropped.to_string());
+        }
         for (i, p) in self.patches.iter().enumerate() {
             put(&format!("patch.{}", i + 1), p);
         }
@@ -260,6 +267,10 @@ impl Report {
         }
         kv
     }
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Why send-back did not run; nothing it says was made, unless it says so.
@@ -289,6 +300,9 @@ pub fn send_back(
     let (branch_sha, _) = git
         .branch(ask.branch)?
         .ok_or_else(|| SendError(format!("no branch {} (locally or on origin)", ask.branch)))?;
+    if ask.onto.starts_with('-') {
+        return Err(SendError(format!("--onto {}: not a ref", ask.onto)));
+    }
     let base_sha = git.commit(ask.onto)?.ok_or_else(|| {
         SendError(format!("--onto {}: no such commit in the clone (fetch it)", ask.onto))
     })?;
@@ -324,22 +338,64 @@ pub fn send_back(
         file: ask.out.display().to_string(),
         patches: Vec::new(),
         range_diff: range_diff.as_ref().map(|(tag, _)| tag.clone()),
+        dropped: 0,
         checks: Vec::new(),
         recipients: Vec::new(),
         conflict: None,
     };
 
+    let created_out = !ask.out.exists();
     git.add_branch_worktree(&worktree, &send, &branch_sha)?;
-    if let RebaseResult::Conflict { commit, subject, paths } = git.rebase(&worktree, &base_sha)? {
-        report.conflict = Some(Conflict { commit, subject, paths });
-        drop_send(git, &worktree, &send)?;
-        return Ok(report);
+    let made = Making { n, tag, send: &send, worktree: &worktree, range_diff };
+    match make_version(git, cmd, ask, &mut report, made) {
+        Ok(()) => Ok(report),
+        Err(e) => {
+            // nothing is kept of a run that could not finish: not the send branch, nor a folder it made
+            let _ = drop_send(git, &worktree, &send);
+            if created_out {
+                let _ = std::fs::remove_dir_all(ask.out);
+            }
+            Err(e)
+        }
     }
-    let tip = git.head(&worktree)?;
+}
+
+/// What one run makes, named before the worktree exists.
+struct Making<'a> {
+    n: u32,
+    tag: String,
+    send: &'a str,
+    worktree: &'a Path,
+    range_diff: Option<(String, String)>,
+}
+
+/// From the fresh worktree on: rebase, cut, check, and tag or drop.
+fn make_version(
+    git: &impl GitPort,
+    cmd: &impl CommandPort,
+    ask: &Ask,
+    report: &mut Report,
+    made: Making,
+) -> Result<(), SendError> {
+    let Making { n, tag, send, worktree, range_diff } = made;
+    let base_sha = report.base_sha.clone();
+    if let RebaseResult::Conflict { commit, subject, paths } = git.rebase(worktree, &base_sha)? {
+        report.conflict = Some(Conflict { commit, subject, paths });
+        return drop_send(git, worktree, send);
+    }
+    let tip = git.head(worktree)?;
+    let series = git.count(&base_sha, &tip)?;
+    if series == 0 {
+        return Err(SendError(format!(
+            "nothing to send: {} holds every commit of {}",
+            ask.onto, ask.branch
+        )));
+    }
+    report.dropped = git.count(&base_sha, &report.branch_sha)?.saturating_sub(series);
     std::fs::create_dir_all(ask.out)
         .map_err(|e| SendError(format!("{}: {e}", ask.out.display())))?;
     report.patches = git.format_patch(
-        &worktree,
+        worktree,
         &FormatPatch {
             range: format!("{base_sha}..{tip}"),
             version: n,
@@ -348,33 +404,39 @@ pub fn send_back(
             out: ask.out.to_path_buf(),
         },
     )?;
-    changelog_skeleton(&report.patches, n)?;
-    let patch_files: Vec<String> =
-        report.patches.iter().filter(|p| !p.contains("0000-cover-letter")).cloned().collect();
+    // with --cover-letter, git writes the cover letter first
+    let Some((cover, patch_files)) = report.patches.split_first() else {
+        return Err(SendError("git format-patch wrote nothing".to_string()));
+    };
+    changelog_skeleton(cover, n)?;
+    let patch_files = patch_files.to_vec();
     for step in &ask.config.check {
-        report.checks.push(run_step(cmd, step, &patch_files, &worktree)?);
+        report.checks.push(run_step(cmd, step, &patch_files, worktree)?.0);
     }
     if let Some(step) = &ask.config.recipients {
-        let run = run_step(cmd, step, &patch_files, &worktree)?;
-        report.recipients = run
-            .output
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect();
+        let (run, stdout) = run_step(cmd, step, &patch_files, worktree)?;
+        if run.exit == Some(0) {
+            report.recipients = stdout
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect();
+        } else {
+            report.checks.push(run);
+        }
     }
-    write_notes(ask.out, &report)?;
+    write_notes(ask.out, report)?;
 
     if report.checks.iter().all(|c| c.exit == Some(0)) {
-        git.tag(&tag, &tip, &version_message(&report, n))?;
+        git.remove_worktree(worktree)?;
+        git.tag(&tag, &tip, &version_message(report, n))?;
         report.local_ref = Some(tag);
-        report.send_branch = Some(send);
-        git.remove_worktree(&worktree)?;
+        report.send_branch = Some(send.to_string());
+        Ok(())
     } else {
-        drop_send(git, &worktree, &send)?;
+        drop_send(git, worktree, send)
     }
-    Ok(report)
 }
 
 /// The tested commit as a full sha: a commit's sha (or a prefix of one), never a name that moves.
@@ -420,10 +482,7 @@ fn previous_range(
 }
 
 /// Put a changelog skeleton under the cover letter's blurb, for the author to fill.
-fn changelog_skeleton(patches: &[String], n: u32) -> Result<(), SendError> {
-    let Some(cover) = patches.iter().find(|p| p.contains("0000-cover-letter")) else {
-        return Ok(());
-    };
+fn changelog_skeleton(cover: &str, n: u32) -> Result<(), SendError> {
     let text = std::fs::read_to_string(cover).map_err(|e| SendError(format!("{cover}: {e}")))?;
     let heading =
         if n > 1 { format!("Changes since v{}:", n - 1) } else { format!("Changes in v{n}:") };
@@ -437,14 +496,14 @@ fn run_step(
     step: &Step,
     patches: &[String],
     dir: &Path,
-) -> Result<StepRun, SendError> {
+) -> Result<(StepRun, String), SendError> {
     let mut argv = step.run.clone();
     if step.patches {
         argv.extend(patches.iter().cloned());
     }
     let (exit, stdout, stderr) = cmd.run(&argv, dir)?;
-    let output = if stderr.is_empty() { stdout } else { format!("{stdout}{stderr}") };
-    Ok(StepRun { name: step.name.clone(), exit, output })
+    let output = if stderr.is_empty() { stdout.clone() } else { format!("{stdout}{stderr}") };
+    Ok((StepRun { name: step.name.clone(), exit, output }, stdout))
 }
 
 /// SEND-NOTES beside the patches: what the series is based on and was tested on, and every check's output.
