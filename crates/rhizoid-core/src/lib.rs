@@ -5,6 +5,7 @@
 pub mod assemble;
 pub mod finding;
 pub mod graph;
+pub mod kernel;
 pub mod manifest;
 pub mod module;
 pub mod ports;
@@ -14,6 +15,7 @@ pub mod text;
 
 pub use finding::{drift_count, summary, Check, Finding, Verdict};
 pub use graph::{Graph, RepoName};
+pub use kernel::{kernel_status, KernelReads, Worktree};
 pub use manifest::{Defaults, Manifest, ModuleEntry, ModuleOrigin};
 pub use module::ModuleMetadata;
 pub use ports::{GitHubPort, GitPort, MergeOutcome, MergeResult, PortError};

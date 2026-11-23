@@ -1,0 +1,21 @@
+# A kernel edge for `rhizoid status`: one kernel clone read against its branch and tag scheme, the upstream releases
+# it carries, and what `rhizoid assemble` made in it. Kept apart from linux-phone-oco.graph.toml, whose edges
+# tests/agree-with-graph-drift.sh compares one by one with the shell they replace.
+
+[clones]
+"grenudi/linux" = "linux-phone-oco/linux"
+
+[[kernel]]
+clone = "grenudi/linux"
+release_prefix = "v"          # v6.18, v6.18-rc3: always in the scheme
+
+# the scheme of the structure review (2026-11-23), which is also the default when none is given; a pattern is
+# `/`-separated parts, each a literal with a CAPITAL placeholder at its end (N: digits; any other: one part's text)
+[kernel.scheme]
+branches = ["topic/ITEM", "backport/ITEM/BASE", "wip/LANE/WHAT", "int/DEVICE/LIST"]
+tags = ["topic/ITEM/vN", "int/DEVICE/LIST/BASE/N", "archive/NAME"]
+
+# the fork and its upstream: an edge of its own, read with git ls-remote
+[[fork]]
+fork = "grenudi/linux"
+upstream = "sm7150-mainline/linux"

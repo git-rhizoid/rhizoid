@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
+/// What an assembled worktree's lock reason starts with; the tag's name follows, then `:`.
+pub const LOCK_REASON_PREFIX: &str = "rhizoid assemble ";
+
+/// What the message of every tag assemble writes starts with.
+pub const TAG_MESSAGE_START: &str = "rhizoid assemble: ";
+
 /// A lab's list file: the device it assembles for, and its named lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lists {
@@ -447,7 +453,7 @@ pub fn assemble(git: &impl GitPort, ask: &Ask) -> Result<Report, AssembleError> 
 
     git.share_rerere()?;
     git.add_worktree(&worktree, &base_sha)?;
-    git.lock_worktree(&worktree, &format!("rhizoid assemble {tag}: wanted until unlocked"))?;
+    git.lock_worktree(&worktree, &format!("{LOCK_REASON_PREFIX}{tag}: wanted until unlocked"))?;
 
     let mut report = Report {
         device: ask.device.to_string(),
@@ -553,7 +559,7 @@ fn conflict(
 
 fn tag_message(report: &Report) -> String {
     let mut m =
-        format!("rhizoid assemble: {}/{} onto {}\n\n", report.device, report.list, report.base);
+        format!("{TAG_MESSAGE_START}{}/{} onto {}\n\n", report.device, report.list, report.base);
     for (k, v) in report.recipe() {
         m.push_str(&format!("{k}={v}\n"));
     }

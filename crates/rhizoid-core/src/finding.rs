@@ -13,6 +13,8 @@ pub enum Verdict {
     Behind,
     /// The follower changed what the source gives, or keeps by hand what the source would give.
     MovedByHand,
+    /// What was read cannot say yet; never drift.
+    NotKnownYet,
 }
 
 impl Verdict {
@@ -22,6 +24,7 @@ impl Verdict {
             Verdict::Current => "current",
             Verdict::Behind => "behind",
             Verdict::MovedByHand => "moved-by-hand",
+            Verdict::NotKnownYet => "not-known-yet",
         }
     }
 }
@@ -50,6 +53,16 @@ pub enum Check {
     ToolListed,
     /// A fork's tracking branch against its upstream's head.
     ForkTrack,
+    /// A kernel clone's branch and tag names against its scheme.
+    KernelScheme,
+    /// A topic against the newest release, a backport against the base its name says.
+    TopicBase,
+    /// An int branch against the tags assemble made for it.
+    IntByHand,
+    /// An int tag's recipe, read back from its message, against the branches now.
+    IntRecipe,
+    /// An assembled worktree against its tag.
+    WorktreeTag,
 }
 
 impl Check {
@@ -66,6 +79,11 @@ impl Check {
             Check::ToolPin => "tool-pin",
             Check::ToolListed => "tool-listed",
             Check::ForkTrack => "fork-track",
+            Check::KernelScheme => "kernel-scheme",
+            Check::TopicBase => "topic-base",
+            Check::IntByHand => "int-by-hand",
+            Check::IntRecipe => "int-recipe",
+            Check::WorktreeTag => "worktree-tag",
         }
     }
 }
@@ -91,7 +109,7 @@ impl Finding {
     /// Whether this is drift nothing yet answers: behind, or moved by hand with no item carrying it.
     pub fn is_drift(&self) -> bool {
         match self.verdict {
-            Verdict::Current => false,
+            Verdict::Current | Verdict::NotKnownYet => false,
             Verdict::Behind => true,
             Verdict::MovedByHand => self.carried_by.is_none(),
         }
@@ -124,8 +142,12 @@ pub fn drift_count(findings: &[Finding]) -> usize {
 /// One line for the end of a report: how many findings, and how they stand.
 pub fn summary(findings: &[Finding]) -> String {
     let n = |v: Verdict| findings.iter().filter(|f| f.verdict == v).count();
+    let unknown = match n(Verdict::NotKnownYet) {
+        0 => String::new(),
+        k => format!(", {k} not known yet"),
+    };
     format!(
-        "{} checks: {} current, {} behind, {} moved by hand ({} drift)",
+        "{} checks: {} current, {} behind, {} moved by hand{unknown} ({} drift)",
         findings.len(),
         n(Verdict::Current),
         n(Verdict::Behind),

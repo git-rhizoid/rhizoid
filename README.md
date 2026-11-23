@@ -7,7 +7,7 @@ when you want to. See [`git-rhizoid/git-rhizoid.github.io`](https://github.com/g
 for the design log and current status.
 
 **Status: `rhizoid status` and `rhizoid assemble` work** - status is the first step of the follow tool for every edge a
-repository has (a slice, a tool pin, a fork); assemble builds a test kernel's integration from a list of branches; `add`, `import`, `update` and `refresh` wait for the GitHub adapter. The rest
+repository has (a slice, a tool pin, a fork, a kernel clone); assemble builds a test kernel's integration from a list of branches; `add`, `import`, `update` and `refresh` wait for the GitHub adapter. The rest
 of the repo is the devenv and CI/release scaffolding (from [rustnix](https://github.com/grenudi/rustnix)).
 
 ## rhizoid status
@@ -23,12 +23,29 @@ repositories follow which source, and what a source's tags look like. Each follo
 read. `tests/agree-with-graph-drift.sh` runs it against the shell it replaces, `graph-drift.sh` of
 `linux-phone-oco/docs`, on the real graph and compares them edge by edge.
 
-It reads the clones as they are (`--fetch` brings their tags and branches up to date first), and pin files as TOML, not
-as lines. Where it answers differently from the shell on purpose: a file named in `own` that neither side has is
+It reads the clones as they are (`--fetch` first fetches each clone's branches from `origin`, pruning the ones `origin`
+no longer has, then its tags without pruning, so a tag made locally stays), and pin files as TOML, not as lines. Where it answers differently from the shell on purpose: a file named in `own` that neither side has is
 `behind` (a typo), a pin that names a release its source never made is `behind`, a fork ahead of its upstream is
 `moved-by-hand` and not behind, a pin file that is not what it should be stops the report. The old `status`, which
 listed the modules of `rhizoid.toml` and said drift was unknown, is gone: a cutting returns as an edge of the graph
 when cuttings are built (step 4 of the order).
+
+**A kernel edge** (`[[kernel]]`, [`examples/kernel.graph.toml`](examples/kernel.graph.toml)) reads one kernel clone
+against the branch and tag scheme the graph gives it (by default the structure review's: branches `topic/ITEM`,
+`backport/ITEM/BASE`, `wip/LANE/WHAT`, `int/DEVICE/LIST`; tags `topic/ITEM/vN`, `int/DEVICE/LIST/BASE/N`,
+`archive/NAME`; upstream release tags such as `v6.18` and `v6.18-rc3` always count as in the scheme), and against what
+`rhizoid assemble` made in it:
+
+| check | current | otherwise |
+|---|---|---|
+| `kernel-scheme` | every local branch and tag fits the scheme | `moved-by-hand`, one finding per name outside it |
+| `topic-base` | a topic is on the newest release; a `backport/ITEM/BASE` is on its BASE | `behind` (the release it is on), `moved-by-hand` (a backport off its BASE) |
+| `int-by-hand` | an `int/DEVICE/LIST` branch is at a tag assemble made | `moved-by-hand`: how many commits are not assemble's, or no assembled tag under it |
+| `int-recipe` | the newest tag of each `int/DEVICE/LIST/BASE`: its recipe, read back from its message, names every branch where it is now | `behind`: a branch moved or is gone, so assemble again; `moved-by-hand`: a tag under `int/` with no recipe |
+| `worktree-tag` | a worktree assemble locked has its tag's tree and no change | `moved-by-hand`: a different tree, a change, or a tag that was never made |
+
+A fork and its upstream stay a `[[fork]]` edge. What the clone cannot say (no release tag in it, a topic with no
+release under it, a worktree folder that cannot be read) is `not-known-yet`, which is not drift.
 
 ## rhizoid assemble
 

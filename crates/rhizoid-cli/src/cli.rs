@@ -8,7 +8,7 @@
 //!   rhizoid update [MODULE]
 //!   rhizoid refresh [MODULE]
 //!   rhizoid remove MODULE
-//!   rhizoid status [--graph FILE] [--root DIR] [--fetch] [--json]   every edge of a repository graph, read-only
+//!   rhizoid status [--graph FILE] [--root DIR] [--fetch] [--json]   every edge of a repository graph (kernel clones too), read-only
 //!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
 //!   rhizoid completions SHELL | man | --version | --help
 //! ```
