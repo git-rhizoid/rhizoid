@@ -75,6 +75,9 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
     }
     .map_err(|e| e.to_string())?;
     let mut plan = plan;
+    if ask.verb == Verb::Update {
+        topic_notes(ask, &graph, &name, &mut plan);
+    }
     // the record is tried on the graph now: a conflict blocks the plan before any outward step
     let record = plan.steps.iter().find_map(|s| match s {
         rhizoid_core::cutting::Step::Record { record } => Some(record.clone()),
@@ -142,4 +145,39 @@ fn today() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     format!("{:04}-{m:02}-{d:02}", if m <= 2 { y + 1 } else { y })
+}
+
+/// For an integration cutting that tracks releases, what status's topic-base says of its topics: the ones not on
+/// the newest release are named, to be rebased by hand.
+fn topic_notes(ask: &Ask, graph: &Graph, name: &RepoName, plan: &mut Plan) {
+    use rhizoid_core::{integration_status, Check, Verdict};
+    let integration_cutting = graph.forks.iter().any(|f| {
+        matches!(&f.fork, rhizoid_core::graph::Remote::GitHub(n) if n == name)
+            && f.patches.as_deref() == Some("integration")
+            && f.branch.is_none()
+    });
+    let Some(edge) = graph.integrations.iter().find(|i| &i.repo == name) else { return };
+    if !integration_cutting {
+        return;
+    }
+    let repos = crate::git_repos::GitRepos::new(&ask.root, graph, false);
+    match integration_status(std::slice::from_ref(edge), &repos) {
+        Err(e) => plan.notes.push(format!("status could not read the clone: {e}")),
+        Ok(findings) => {
+            let behind: Vec<_> = findings
+                .iter()
+                .filter(|f| f.check == Check::TopicBase && f.verdict != Verdict::Current)
+                .collect();
+            if behind.is_empty() {
+                plan.notes.push("topic-base: every topic is on the newest release".to_string());
+            }
+            for f in behind {
+                plan.notes.push(format!(
+                    "topic-base ({}): {} - rebase it",
+                    f.verdict.as_str(),
+                    f.detail
+                ));
+            }
+        }
+    }
 }

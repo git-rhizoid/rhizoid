@@ -326,8 +326,7 @@ not yet cuttings.
 [[fork]]
 fork = "grenudi/linux"
 upstream = "sm7150-mainline/linux"
-branch = "master"                 # tracking
-upstream_branch = "master"
+tracks = "torvalds/linux"         # an integration cutting tracks its releases source, not a branch
 patches = "integration"           # or a branch: "rhizoid/patch"
 added = "import"
 ```
@@ -340,7 +339,9 @@ integration mode it needs the `[[integration]]` edge and pushes nothing; it reco
 SOURCE` forks SOURCE on GitHub into `--org` or `fork_org`, then does what import does. `update MODULE`
 fast-forwards tracking - GitHub's merge-upstream when the upstream is the fork's GitHub parent, else a fetch from the
 upstream and a push that must be a fast-forward (a tracking branch changed by hand is refused) - and merges tracking
-into the patch branch in a fresh worktree (a conflict stops it, nothing pushed). `refresh` reads each fork against
+into the patch branch in a fresh worktree (a conflict stops it, nothing pushed). For an integration cutting that tracks
+releases it merges and pushes nothing: it says what `status`'s topic-base says - each topic not on the newest
+release, to be rebased onto it, which is the lane's work. `refresh` reads each fork against
 GitHub and changes nothing. `remove MODULE` takes the cutting out of the graph; the fork stays on GitHub - deleting a
 repository is a person's act.
 

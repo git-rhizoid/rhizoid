@@ -340,6 +340,10 @@ pub struct Fork {
     /// `"integration"`, the topic branches the repository's `[[integration]]` edge assembles.
     #[serde(default)]
     pub patches: Option<String>,
+    /// For an integration cutting, whose releases its topics are on (`torvalds/linux`): what it tracks, in place
+    /// of a branch.
+    #[serde(default)]
+    pub tracks: Option<String>,
     /// For a cutting, how it came to rhizoid: `"add"` (forked by rhizoid) or `"import"` (a fork adopted).
     #[serde(default)]
     pub added: Option<String>,
