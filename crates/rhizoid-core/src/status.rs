@@ -14,6 +14,7 @@ use crate::text::{
     is_three_part_release, latest_release, lines_missing, marked_part, raw_marked_part, same_text,
     table_names,
 };
+use std::collections::BTreeMap;
 
 /// Every edge's findings, in the graph's order. The first thing the world cannot answer stops it.
 pub fn status(graph: &Graph, repos: &dyn Repos) -> Result<Vec<Finding>, RepoError> {
@@ -94,15 +95,52 @@ fn pin_string(
     }
 }
 
-/// What a slice's pin file says: the release followed (if it names one) and the files kept as the follower's own.
+/// What a slice's pin file says: the release followed (if it names one), the files kept as the follower's own,
+/// and why each is kept.
 struct SlicePin {
     version: Option<String>,
     own: Vec<String>,
+    why: BTreeMap<String, String>,
 }
 
-fn slice_pin(repo: &RepoName, path: &str, text: &str) -> Result<SlicePin, RepoError> {
+/// Why an own file is kept, as its pin file declares it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Why<'a> {
+    /// A reason: the follower keeps the file as its own on purpose.
+    Declared(&'a str),
+    /// `upstream:ITEM`: the change is on its way up.
+    Upstream(&'a str),
+    /// No reason given.
+    None,
+}
+
+/// The release a follower pins and its source's newest.
+#[derive(Debug, Clone, Copy)]
+struct At<'a> {
+    version: &'a str,
+    latest: &'a str,
+}
+
+/// The value of `[why]` that names an upstream item instead of a reason.
+const UPSTREAM: &str = "upstream:";
+
+impl SlicePin {
+    fn why(&self, file: &str) -> Why<'_> {
+        match self.why.get(file).map(|w| w.trim()) {
+            None | Some("") => Why::None,
+            Some(w) => match w.strip_prefix(UPSTREAM) {
+                Some(item) if !item.trim().is_empty() => Why::Upstream(item.trim()),
+                Some(_) => Why::None,
+                None => Why::Declared(w),
+            },
+        }
+    }
+}
+
+fn slice_pin(repo: &RepoName, s: &Slice, text: &str) -> Result<SlicePin, RepoError> {
+    let (path, own_key, why_key) = (s.pin.as_str(), s.own_key.as_str(), s.why_key.as_str());
     let t = parse_toml(repo, path, text)?;
-    let own = match t.get("own") {
+    let own = match t.get(own_key) {
         None => Vec::new(),
         Some(toml::Value::Array(a)) => a
             .iter()
@@ -110,12 +148,30 @@ fn slice_pin(repo: &RepoName, path: &str, text: &str) -> Result<SlicePin, RepoEr
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| {
                 RepoError::Failed(format!(
-                    "{repo}: {path}: `own` holds something that is not a string"
+                    "{repo}: {path}: `{own_key}` holds something that is not a string"
                 ))
             })?,
-        Some(_) => return Err(RepoError::Failed(format!("{repo}: {path}: `own` is not a list"))),
+        Some(_) => {
+            return Err(RepoError::Failed(format!("{repo}: {path}: `{own_key}` is not a list")))
+        }
     };
-    Ok(SlicePin { version: pin_string(repo, path, &t, "version")?, own })
+    let why = match t.get(why_key) {
+        None => BTreeMap::new(),
+        Some(toml::Value::Table(w)) => w
+            .iter()
+            .map(|(file, v)| {
+                v.as_str().map(|r| (file.clone(), r.to_string())).ok_or_else(|| {
+                    RepoError::Failed(format!(
+                        "{repo}: {path}: [{why_key}] {file} is not a reason in quotes (a file name with a dot needs quotes too: \"{file}.toml\" = \"...\")"
+                    ))
+                })
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?,
+        Some(_) => {
+            return Err(RepoError::Failed(format!("{repo}: {path}: `{why_key}` is not a table")))
+        }
+    };
+    Ok(SlicePin { version: pin_string(repo, path, &t, "version")?, own, why })
 }
 
 /// Whether `e` says `source` has no such revision: a pin that names a release its source never made.
@@ -145,8 +201,8 @@ impl Cx<'_> {
             out.push(edge(Check::SlicePin).behind(format!("{follower} has no {} at {rev}", s.pin)));
             return Ok(());
         };
-        let pin = slice_pin(follower, &s.pin, &pin_text)?;
-        let Some(version) = pin.version else {
+        let pin = slice_pin(follower, s, &pin_text)?;
+        let Some(version) = pin.version.clone() else {
             out.push(edge(Check::SlicePin).behind(format!("{} names no version", s.pin)));
             return Ok(());
         };
@@ -156,14 +212,15 @@ impl Cx<'_> {
         } else {
             edge(Check::SlicePin).behind(format!("pins {} {version}, latest {latest}", s.marker))
         });
-        let tag = format!("{}{version}", s.tag_prefix);
         let items = self.items(follower, s)?;
+        let at = At { version: &version, latest: &latest };
         for file in &pin.own {
             let check = if *file == s.part_file { Check::OwnPart } else { Check::OwnBehind };
             let found = if check == Check::OwnPart {
-                self.own_part(s, follower, &tag, &version, file)
+                let follow_reads_own = crate::follow::reads_as_own(&pin_text, file);
+                self.own_part(s, follower, &version, file, pin.why(file), follow_reads_own)
             } else {
-                self.own_file(s, follower, &tag, &version, file, &items)
+                self.own_file(s, follower, at, file, &items, pin.why(file))
             };
             match found {
                 Err(e) if is_no_release(&e, &s.source) => out.push(
@@ -199,17 +256,19 @@ impl Cx<'_> {
         &self,
         s: &Slice,
         follower: &RepoName,
-        tag: &str,
-        version: &str,
+        at: At<'_>,
         file: &str,
         items: &[(String, String)],
+        why: Why<'_>,
     ) -> Result<Finding, RepoError> {
+        let At { version, latest } = at;
         let edge = Edge {
             follower: follower.as_str(),
             source: s.source.as_str(),
             check: Check::OwnBehind,
         };
-        let given = self.repos.file(&s.source, tag, file)?;
+        let tag = format!("{}{version}", s.tag_prefix);
+        let given = self.repos.file(&s.source, &tag, file)?;
         let kept = self.repos.file(follower, &self.graph.rev, file)?;
         if given.is_none() && kept.is_none() {
             return Ok(edge.behind(format!(
@@ -221,12 +280,36 @@ impl Cx<'_> {
         if same_text(&given, &kept) {
             return Ok(edge.current(format!("{file} is {}'s at {version}", s.source)));
         }
+        if let Why::Declared(reason) = why {
+            // as follow says when it moves the pin: a release since the pin that changed the file is worth a look
+            let mut look = String::new();
+            if latest != version {
+                let newer =
+                    self.repos.file(&s.source, &format!("{}{latest}", s.tag_prefix), file)?;
+                if !same_text(&newer.unwrap_or_default(), &given) {
+                    look = format!(
+                        "; {} {latest} changed it - look at whether the follower takes it",
+                        s.source
+                    );
+                }
+            }
+            return Ok(edge.current(format!(
+                "{file} differs from {}'s at {version}, declared own: {reason}{look}",
+                s.source
+            )));
+        }
+        // upstream:ITEM or no reason: a candidate to go up, or a change nothing explains
         let carried =
             items.iter().find(|(_, words)| words.contains(file)).map(|(id, _)| id.clone());
+        let unexplained = if why == Why::None {
+            format!(" and no reason in [{}]", s.why_key)
+        } else {
+            String::new()
+        };
         Ok(match carried {
             Some(item) => edge.carried(format!("{file} differs, and an upstream item carries it"), item),
             None => edge.by_hand(format!(
-                "{file} differs from {}'s at {version} and no upstream item names it - neither goes up nor comes down",
+                "{file} differs from {}'s at {version}{unexplained}, and no upstream item names it - neither goes up nor comes down",
                 s.source
             )),
         })
@@ -236,15 +319,45 @@ impl Cx<'_> {
         &self,
         s: &Slice,
         follower: &RepoName,
-        tag: &str,
         version: &str,
         file: &str,
+        why: Why<'_>,
+        follow_reads_own: bool,
     ) -> Result<Finding, RepoError> {
         let edge =
             Edge { follower: follower.as_str(), source: s.source.as_str(), check: Check::OwnPart };
-        let given = self.text(&s.source, tag, file)?;
+        let tag = format!("{}{version}", s.tag_prefix);
+        let given = self.text(&s.source, &tag, file)?;
         let kept = self.text(follower, &self.graph.rev, file)?;
         let (want, have) = (marked_part(&given, &s.marker), marked_part(&kept, &s.marker));
+        // status agrees with follow: a file follow does not read as own gets its part laid again
+        if !follow_reads_own && want != have && !want.is_empty() {
+            return Ok(edge.behind(format!(
+                "{file}'s {} part is not {} {version}'s, and follow does not read {file} as own (it reads a one-line `own = [...]` in {}): follow again lays it",
+                s.marker, s.source, s.pin
+            )));
+        }
+        // follow leaves an own file whole, its marked part too: a part that differs is the follower's, declared
+        if let (Why::Declared(reason), true) = (why, want != have || have.is_empty()) {
+            let how = if have.is_empty() {
+                format!("{file} carries no {} part", s.marker)
+            } else if want.is_empty() {
+                format!(
+                    "{file} carries a {} part that {} {version} does not have",
+                    s.marker, s.source
+                )
+            } else {
+                format!(
+                    "{file}'s {} part differs in {} lines of {} {version}'s",
+                    s.marker,
+                    lines_missing(&want, &have),
+                    s.source
+                )
+            };
+            return Ok(
+                edge.current(format!("{how}, declared own (follow leaves it whole): {reason}"))
+            );
+        }
         Ok(if have.is_empty() {
             edge.by_hand(format!(
                 "{file} carries no {} part; nothing new of {}'s tables reaches it",

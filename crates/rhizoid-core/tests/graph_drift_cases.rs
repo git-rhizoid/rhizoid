@@ -444,3 +444,144 @@ fn a_clone_that_lacks_the_revision_says_which_clone() {
     let e = refused(&w);
     assert!(e.contains(DOCS) || e.contains(KB), "{e}");
 }
+
+/// SURYA's pin with a `[why]` table: `own` and the reasons as the follower declares them.
+fn surya_why(why: &str) -> World {
+    let mut w = World::current();
+    w.put(
+        SURYA,
+        MAIN,
+        "idealkb.toml",
+        &format!(
+            "version = \"0.18.0\"\nown = [\"tables.toml\", \"records/backlog.sql\"]\n\n[why]\n{why}"
+        ),
+    );
+    w
+}
+
+#[test]
+fn an_own_file_whose_why_gives_a_reason_is_declared_and_current() {
+    let mut w = surya_why("\"records/backlog.sql\" = \"the base's records take --project\"\n");
+    w.put(SURYA, MAIN, "records/backlog.sql", "backlog sql, the base's own");
+    let f = one(&run(&w), SURYA, Check::OwnBehind).clone();
+    assert_eq!(f.verdict, Verdict::Current, "{f}");
+    assert!(f.detail.contains("declared own: the base's records take --project"), "{f}");
+}
+
+#[test]
+fn an_own_file_whose_why_names_an_upstream_item_stays_a_candidate_to_go_up() {
+    let mut w = surya_why("\"records/backlog.sql\" = \"upstream:backlog-rank\"\n");
+    w.put(SURYA, MAIN, "records/backlog.sql", "backlog sql, edited here");
+    let f = one(&run(&w), SURYA, Check::OwnBehind).clone();
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(!f.detail.contains("no reason"), "{f}");
+}
+
+#[test]
+fn an_own_file_with_no_reason_in_why_is_still_a_finding() {
+    let mut w = surya_why("\"tables.toml\" = \"the base's own tables\"\n");
+    w.put(SURYA, MAIN, "records/backlog.sql", "backlog sql, edited here");
+    let f = one(&run(&w), SURYA, Check::OwnBehind).clone();
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(f.is_drift() && f.detail.contains("no reason in [why]"), "{f}");
+}
+
+#[test]
+fn an_own_tables_file_with_a_reason_keeps_its_part_as_declared_since_follow_leaves_it_whole() {
+    let mut w = surya_why("\"tables.toml\" = \"the base's own tables beside the part\"\n");
+    let short = "# idealkb:begin\n[tables.backlog]\n# idealkb:end\n";
+    w.put(SURYA, MAIN, "tables.toml", &format!("[tables.own]\n{short}"));
+    w.put(DOCS, MAIN, "tables.toml", "[tables.own]\n");
+    let fs = run(&w);
+    let f = one(&fs, SURYA, Check::OwnPart);
+    assert_eq!(f.verdict, Verdict::Current, "{f}");
+    assert!(
+        f.detail.contains("differs in 4 lines") && f.detail.contains("follow leaves it whole"),
+        "{f}"
+    );
+    // docs gives no reason here: its missing part is still said
+    assert_eq!(one(&fs, DOCS, Check::OwnPart).verdict, Verdict::MovedByHand);
+}
+
+#[test]
+fn a_tables_file_with_no_part_and_a_reason_is_declared() {
+    let mut w = surya_why("\"tables.toml\" = \"carries no generic part on purpose\"\n");
+    w.put(SURYA, MAIN, "tables.toml", "[tables.own]\n");
+    let f = one(&run(&w), SURYA, Check::OwnPart).clone();
+    assert_eq!(f.verdict, Verdict::Current, "{f}");
+    assert!(f.detail.contains("carries no idealkb part"), "{f}");
+}
+
+#[test]
+fn the_names_of_own_and_why_come_from_the_slice_edge() {
+    let mut graph = graph();
+    graph.slices[0].own_key = "kept".into();
+    graph.slices[0].why_key = "because".into();
+    let mut w = World::current();
+    w.put(
+        SURYA,
+        MAIN,
+        "idealkb.toml",
+        "version = \"0.18.0\"\nkept = [\"records/backlog.sql\"]\n\n[because]\n\"records/backlog.sql\" = \"ours\"\n",
+    );
+    w.put(SURYA, MAIN, "records/backlog.sql", "backlog sql, ours");
+    let fs = status(&graph, &w).expect("the world answers");
+    let f = one(&fs, SURYA, Check::OwnBehind);
+    assert_eq!(f.verdict, Verdict::Current, "{f}");
+    assert!(f.detail.ends_with("declared own: ours"), "{f}");
+}
+
+#[test]
+fn a_why_that_is_not_a_table_of_reasons_stops_the_report() {
+    let w = surya_why("\"tables.toml\" = 3\n");
+    assert!(status(&graph(), &w).is_err());
+}
+
+#[test]
+fn an_upstream_reason_naming_no_item_is_no_reason() {
+    let mut w = surya_why("\"records/backlog.sql\" = \"upstream:\"\n");
+    w.put(SURYA, MAIN, "records/backlog.sql", "backlog sql, edited here");
+    let f = one(&run(&w), SURYA, Check::OwnBehind).clone();
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(f.detail.contains("no reason in [why]"), "{f}");
+}
+
+#[test]
+fn a_declared_own_file_a_newer_release_changed_says_to_look() {
+    let mut w = surya_why("\"records/backlog.sql\" = \"ours\"\n");
+    w.put(
+        SURYA,
+        MAIN,
+        "idealkb.toml",
+        "version = \"0.17.0\"\nown = [\"tables.toml\", \"records/backlog.sql\"]\n\n[why]\n\"records/backlog.sql\" = \"ours\"\n",
+    );
+    w.put(KB, "v0.18.0", "records/backlog.sql", "backlog sql, newer");
+    w.put(SURYA, MAIN, "records/backlog.sql", "backlog sql, ours");
+    let f = one(&run(&w), SURYA, Check::OwnBehind).clone();
+    assert_eq!(f.verdict, Verdict::Current, "{f}");
+    assert!(f.detail.contains("v0.18.0") || f.detail.contains("0.18.0 changed it"), "{f}");
+}
+
+#[test]
+fn an_own_tables_file_follow_does_not_read_as_own_is_behind_whatever_its_reason() {
+    // a list over several lines: TOML's own, but follow reads only a one-line `own = [...]`, so it lays the part
+    let mut w = World::current();
+    w.put(
+        SURYA,
+        MAIN,
+        "idealkb.toml",
+        "version = \"0.18.0\"\nown = [\n  \"tables.toml\",\n]\n\n[why]\n\"tables.toml\" = \"ours\"\n",
+    );
+    let short = "# idealkb:begin\n[tables.backlog]\n# idealkb:end\n";
+    w.put(SURYA, MAIN, "tables.toml", &format!("[tables.own]\n{short}"));
+    let f = one(&run(&w), SURYA, Check::OwnPart).clone();
+    assert_eq!(f.verdict, Verdict::Behind, "{f}");
+    assert!(f.detail.contains("follow again lays it"), "{f}");
+}
+
+#[test]
+fn a_why_entry_with_a_dotted_bare_key_is_named_in_the_error() {
+    let w = surya_why("tables.toml = \"ours\"\n");
+    let e = status(&graph(), &w).unwrap_err().to_string();
+    assert!(e.contains("[why] tables") && e.contains("needs quotes"), "{e}");
+}
