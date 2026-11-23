@@ -1,7 +1,7 @@
 //! `rhizoid bump [now]` - every pin of a graph in one place: each tool's and each slice's, what it names and the
-//! newest release. With `now`, each tool pin that is behind is bumped on a branch of its follower's clone (gated
+//! newest release. With `now`, each pin that is behind and names `rhizoid-bump` as its mover is bumped on a branch of its follower's clone (gated
 //! when the tool says so), pushed and its pull request opened when asked. Slices are moved by `follow`.
-//! It ends 0 when every pin is current (or, with `now`, every tool pin bumped), 1 when not, 2 when it could not run.
+//! It ends 0 when every pin is current (or, with `now`, every pin it moves bumped), 1 when not, 2 when it could not run.
 
 use crate::git_cli::{GitCli, Programs};
 use crate::git_repos::GitRepos;
@@ -64,7 +64,8 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
             error: None,
             pin,
         };
-        if ask.now && !row.pin.current() {
+        // a pin another job moves is listed, never moved here: each pin has one mover
+        if ask.now && !row.pin.current() && row.pin.moved_by_bump() {
             // one pin's failure is its own: the others are still bumped, and every one is reported
             match bump_one(ask, &graph, &row.pin) {
                 Ok(outcome) => {
@@ -95,7 +96,8 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
         }
     }
     crate::commands::status::write_report(&mut std::io::stdout().lock(), &report)?;
-    Ok(rows.iter().all(|r| match r.state {
+    // with `now`, how the pins another job moves stand is that job's to say
+    Ok(rows.iter().filter(|r| !ask.now || r.pin.moved_by_bump()).all(|r| match r.state {
         "current" | "branch-exists" => true,
         "bumped" => !matches!(&r.bump, Some(Bumped::Bumped { pr_error: Some(_), .. })),
         _ => false,
@@ -137,6 +139,7 @@ fn render(rows: &[Row], json: bool) -> String {
         let k = |f: &str| format!("pin.{}.{f}", i + 1);
         let mut put = |key: String, v: &str| out.push_str(&format!("{key}={v}\n"));
         put(k("follower"), r.pin.follower.as_str());
+        put(k("moved_by"), &r.pin.moved_by);
         put(
             k("kind"),
             match r.pin.kind {

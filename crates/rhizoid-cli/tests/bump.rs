@@ -451,3 +451,45 @@ fn a_failed_fetch_names_git_and_what_it_said() {
     assert!(said.contains("git fetch --prune --no-prune-tags origin: "), "{said}");
     assert!(said.contains("does not appear to be a git repository"), "git's own words: {said}");
 }
+
+#[test]
+fn a_pin_another_job_moves_is_listed_and_left() {
+    let w = world(PASSING_GATE);
+    let graph = std::fs::read_to_string(&w.graph)
+        .unwrap()
+        .replace(
+            "tag_prefix = \"lpoco-v\"\n",
+            "tag_prefix = \"lpoco-v\"\nmoved_by = \"lpoco-host-follow\"\n",
+        )
+        .replace("marker = \"kb\"\n", "marker = \"kb\"\nmoved_by = \"idealkb-update-pins\"\n");
+    std::fs::write(&w.graph, graph).unwrap();
+    let list = w.bump(&[]);
+    assert_eq!(value(&list, "pin.1.moved_by").as_deref(), Some("lpoco-host-follow"));
+    assert_eq!(value(&list, "pin.2.moved_by").as_deref(), Some("rhizoid-bump"), "the default");
+    assert_eq!(list.status.code(), Some(1), "listing says every pin that is behind");
+
+    let out = w.bump(&["now"]);
+    assert_eq!(out.status.code(), Some(0), "the pins bump moves were bumped: {out:?}");
+    assert_eq!(value(&out, "pin.1.state").as_deref(), Some("behind"), "listed, left");
+    assert_eq!(value(&out, "pin.1.branch"), None);
+    assert_eq!(value(&out, "pin.2.state").as_deref(), Some("bumped"));
+    assert_eq!(value(&out, "pin.3.moved_by").as_deref(), Some("idealkb-update-pins"));
+    assert_eq!(value(&out, "pin.3.state").as_deref(), Some("behind"), "a slice another job moves");
+    assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/bump/lpoco-1*"]), "", "never moved here");
+    assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/bump/acme-kb*"]), "");
+}
+
+#[test]
+fn the_json_report_names_each_pins_mover_and_an_empty_mover_is_refused() {
+    let w = world(PASSING_GATE);
+    let out = w.bump(&["--json"]);
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows[0]["moved_by"], "rhizoid-bump", "{rows}");
+    let graph = std::fs::read_to_string(&w.graph)
+        .unwrap()
+        .replace("tag_prefix = \"lpoco-v\"\n", "tag_prefix = \"lpoco-v\"\nmoved_by = \"\"\n");
+    std::fs::write(&w.graph, graph).unwrap();
+    let out = w.bump(&[]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("moved_by"), "{out:?}");
+}

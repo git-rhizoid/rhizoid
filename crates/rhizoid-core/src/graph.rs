@@ -107,6 +107,11 @@ fn default_own_key() -> String {
 fn default_why_key() -> String {
     "why".to_string()
 }
+/// The mover an edge names when it names none: `rhizoid bump`, which moves only the pins naming it.
+pub const BUMP_MOVER: &str = "rhizoid-bump";
+fn default_moved_by() -> String {
+    BUMP_MOVER.to_string()
+}
 
 /// The whole graph: the revision every clone is read at, where clones differ from their names, and the edges by kind.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -161,6 +166,15 @@ impl Graph {
                 return Err(format!("fork {}: patches names a branch, or \"integration\"", f.fork));
             }
         }
+        let movers = graph.tools.iter().map(|t| (t.name.clone(), &t.moved_by));
+        let movers = movers.chain(graph.slices.iter().map(|s| (s.source.to_string(), &s.moved_by)));
+        for (edge, mover) in movers {
+            if mover.trim().is_empty() {
+                return Err(format!(
+                    "{edge}: moved_by names the one job that moves its pins, not nothing"
+                ));
+            }
+        }
         Ok(graph)
     }
 
@@ -197,6 +211,10 @@ pub struct Slice {
     /// `upstream:ITEM` (it is on its way up, as an upstream item would say).
     #[serde(default = "default_why_key")]
     pub why_key: String,
+    /// The one job that moves this edge's pins (decision 2026-11-23-every-pin-one-pushed-mover): `rhizoid bump`
+    /// moves only those naming `rhizoid-bump`, and lists the rest.
+    #[serde(default = "default_moved_by")]
+    pub moved_by: String,
     /// A command a bump must pass before it is committed (argv, run in the follower's worktree once laid).
     #[serde(default)]
     pub gate: Option<Vec<String>>,
@@ -267,6 +285,8 @@ struct RawTool {
     #[serde(default)]
     also: Vec<String>,
     listed_in: Option<Listing>,
+    #[serde(default = "default_moved_by")]
+    moved_by: String,
     followers: Vec<RepoName>,
 }
 
@@ -294,6 +314,8 @@ pub struct Tool {
     pub also: Vec<String>,
     /// A list of the repositories whose pin a job moves; a follower not on it moves its pin by hand.
     pub listed_in: Option<Listing>,
+    /// The one job that moves its pins: `rhizoid bump` moves only those naming `rhizoid-bump`.
+    pub moved_by: String,
     /// The repositories that pin it.
     pub followers: Vec<RepoName>,
 }
@@ -347,6 +369,7 @@ impl TryFrom<RawTool> for Tool {
             gate: r.gate,
             also: r.also,
             listed_in: r.listed_in,
+            moved_by: r.moved_by,
             followers: r.followers,
         })
     }

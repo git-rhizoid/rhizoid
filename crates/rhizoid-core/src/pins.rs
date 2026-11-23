@@ -183,6 +183,8 @@ pub struct Pin {
     pub pinned: Option<String>,
     /// The newest release of its source.
     pub latest: String,
+    /// The one job that moves it, as its edge names it.
+    pub moved_by: String,
     /// The tool, for a tool pin: where to find it in the graph.
     #[serde(skip)]
     pub tool: Option<usize>,
@@ -195,6 +197,11 @@ impl Pin {
     /// Whether it names the newest release.
     pub fn current(&self) -> bool {
         self.pinned.as_deref() == Some(self.latest.as_str())
+    }
+
+    /// Whether `rhizoid bump` is the one that moves it.
+    pub fn moved_by_bump(&self) -> bool {
+        self.moved_by == crate::graph::BUMP_MOVER
     }
 }
 
@@ -227,6 +234,7 @@ pub fn plan(graph: &crate::Graph, repos: &dyn crate::Repos) -> Result<Vec<Pin>, 
                 file: t.pin.clone(),
                 pinned: read_pin(t, f, &text)?,
                 latest: newest.clone(),
+                moved_by: t.moved_by.clone(),
                 tool: Some(i),
                 slice: None,
             });
@@ -246,6 +254,7 @@ pub fn plan(graph: &crate::Graph, repos: &dyn crate::Repos) -> Result<Vec<Pin>, 
                 file: s.pin.clone(),
                 pinned: table.get("version").and_then(|v| v.as_str()).map(str::to_string),
                 latest: newest.clone(),
+                moved_by: s.moved_by.clone(),
                 tool: None,
                 slice: Some(i),
             });
