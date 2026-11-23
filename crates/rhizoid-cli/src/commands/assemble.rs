@@ -38,13 +38,12 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
         .map_err(|e| format!("cannot read the list file {}: {e}", ask.lists.display()))?;
     let lists = Lists::parse(&text).map_err(|e| format!("{}: {e}", ask.lists.display()))?;
     let list = lists.get(&ask.list)?;
-    let repo = std::fs::canonicalize(&ask.repo)
-        .map_err(|e| format!("no clone at {}: {e}", ask.repo.display()))?;
-    let home = rhizoid_home(&ask.worktrees, &repo)?;
-    let worktree =
-        ask.worktree.as_deref().map(|w| real_as_far_as_it_exists(&repo, w)).transpose()?;
+    let git = GitCli::new(&ask.repo);
+    let clone = git.main_clone().map_err(|e| format!("no clone at {}: {e}", ask.repo.display()))?;
+    let home = rhizoid_home(&ask.worktrees, &clone)?;
+    let worktree = ask.worktree.as_deref().map(real_as_far_as_it_exists).transpose()?;
     let report = assemble(
-        &GitCli::new(&repo),
+        &git,
         &CoreAsk {
             device: &lists.device,
             list_name: &ask.list,
@@ -71,19 +70,19 @@ pub fn render(report: &Report, json: bool) -> String {
     report.key_values().into_iter().map(|(k, v)| format!("{k}={v}\n")).collect()
 }
 
-/// rhizoid's worktree home for this clone, `WORKTREES/REPO/rhizoid`, made if missing, as its real path.
-fn rhizoid_home(worktrees: &Path, repo: &Path) -> Result<PathBuf, String> {
-    let name = repo.file_name().ok_or_else(|| format!("{} has no folder name", repo.display()))?;
-    let home = worktrees.join(name).join("rhizoid");
-    std::fs::create_dir_all(&home)
-        .and_then(|()| std::fs::canonicalize(&home))
-        .map_err(|e| format!("cannot make the worktree home {}: {e}", home.display()))
+/// rhizoid's worktree home for a clone, `WORKTREES/CLONE/rhizoid` (named after the main clone's folder), as
+/// real a path as exists yet; git makes the folders when it adds the first worktree.
+fn rhizoid_home(worktrees: &Path, clone: &Path) -> Result<PathBuf, String> {
+    let name =
+        clone.file_name().ok_or_else(|| format!("{} has no folder name", clone.display()))?;
+    real_as_far_as_it_exists(&worktrees.join(name).join("rhizoid"))
 }
 
 /// `wanted` (relative to the current folder) with its longest existing part resolved to a real path, so a
 /// symbolic link cannot carry it outside the home; `.` and `..` in what does not exist yet are kept, and refused.
-fn real_as_far_as_it_exists(repo: &Path, wanted: &Path) -> Result<PathBuf, String> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| repo.to_path_buf());
+fn real_as_far_as_it_exists(wanted: &Path) -> Result<PathBuf, String> {
+    let cwd =
+        std::env::current_dir().map_err(|e| format!("cannot read the current folder: {e}"))?;
     let full = cwd.join(wanted);
     let mut existing = full.clone();
     let mut rest = Vec::new();

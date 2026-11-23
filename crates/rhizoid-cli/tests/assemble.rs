@@ -85,6 +85,19 @@ state = "trying"
 branch = "topic/clash"
 for = "another a"
 state = "trying"
+
+[lists.held]
+base = "v2"
+
+[[lists.held.entries]]
+branch = "topic/a"
+for = "the a part"
+state = "trying"
+
+[[lists.held.entries]]
+branch = "topic/b"
+for = "the b part"
+state = "trying"
 "#;
 
 /// The world: a clone `linux` with tag v1 and three topics, the list file, and the worktree home.
@@ -104,6 +117,7 @@ fn world() -> World {
     branch(&repo, "topic/a", "v1", &[("a.txt", "a from topic a\n")]);
     branch(&repo, "topic/b", "v1", &[("b.txt", "b from topic b\n")]);
     branch(&repo, "topic/clash", "v1", &[("a.txt", "a from topic clash\n")]);
+    git(&repo, &["tag", "v2", "topic/a"]);
     let lists = root.join("topics.toml");
     std::fs::write(&lists, LISTS).unwrap();
     World { root, repo, lists }
@@ -198,7 +212,13 @@ fn a_resolution_made_by_hand_is_replayed_by_rerere_on_the_next_run() {
 
     let again = w.assemble(&["clash"]);
     assert_eq!(again.status.code(), Some(0), "{again:?}");
-    assert_eq!(value(&again, "entry.3.rerere").as_deref(), Some("resolved"));
+    assert_eq!(value(&again, "entry.3.merged").as_deref(), Some("rerere-resolved"));
+    let message = git_out(&w.repo, &["log", "-1", "--format=%B", "int/dev/clash/v1/1"]);
+    assert!(!message.contains('#'), "no comment lines in the merge: {message}");
+    assert!(
+        message.starts_with("rhizoid assemble int/dev/clash/v1/1: merge topic/clash"),
+        "{message}"
+    );
     assert_eq!(value(&again, "tag").as_deref(), Some("int/dev/clash/v1/1"));
     assert_eq!(git_out(&w.repo, &["show", "int/dev/clash/v1/1:a.txt"]), "a, both\n");
     assert_ne!(PathBuf::from(value(&again, "worktree").unwrap()), worktree, "a fresh worktree");
@@ -278,7 +298,10 @@ fn a_missing_branch_or_list_stops_before_anything_is_made() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("no branch topic/b"), "{out:?}");
     let out = w.assemble(&["nope"]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
-    assert!(String::from_utf8_lossy(&out.stderr).contains("the file has clash, two"), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("the file has clash, held, two"),
+        "{out:?}"
+    );
     assert!(!w.home().join("dev-two-v1-1").exists());
 }
 
@@ -303,4 +326,56 @@ fn fetch_prunes_a_branch_the_remote_no_longer_has() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert!(!git_out(&clone, &["branch", "-r"]).contains("origin/topic/clash"), "pruned");
+}
+
+#[test]
+fn an_entry_the_base_already_holds_is_said_so_not_merged() {
+    let w = world();
+    let out = w.assemble(&["held"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(value(&out, "entry.1.merged").as_deref(), Some("already-in"));
+    assert_eq!(value(&out, "entry.2.merged").as_deref(), Some("merged"));
+}
+
+#[test]
+fn a_merge_git_refuses_says_gits_reason() {
+    let w = world();
+    git(&w.repo, &["config", "user.useConfigOnly", "true"]);
+    let out = Command::new(bin())
+        .args(["assemble", "two", "--lists"])
+        .arg(&w.lists)
+        .arg("--repo")
+        .arg(&w.repo)
+        .env("AGENT_WORKTREES", w.root.join("worktrees"))
+        .env("HOME", &w.root)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("EMAIL")
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("failed before merging") && err.contains("identity"), "{err}");
+}
+
+#[test]
+fn the_home_is_named_after_the_main_clone_from_a_linked_worktree() {
+    let w = world();
+    let linked = w.root.join("linked");
+    git(&w.repo, &["worktree", "add", "-q", "--detach", linked.to_str().unwrap(), "v1"]);
+    let out = Command::new(bin())
+        .args(["assemble", "two", "--lists"])
+        .arg(&w.lists)
+        .arg("--repo")
+        .arg(&linked)
+        .env("AGENT_WORKTREES", w.root.join("worktrees"))
+        .envs(IDENTITY)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(value(&out, "worktree").map(PathBuf::from), Some(w.home().join("dev-two-v1-1")));
 }

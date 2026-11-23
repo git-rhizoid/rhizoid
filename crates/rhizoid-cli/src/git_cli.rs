@@ -82,8 +82,7 @@ impl GitPort for GitCli {
     }
 
     fn share_rerere(&self) -> Result<(), PortError> {
-        self.ok(&["config", "rerere.enabled", "true"])?;
-        self.ok(&["config", "rerere.autoUpdate", "true"]).map(drop)
+        self.ok(&["config", "rerere.enabled", "true"]).map(drop)
     }
 
     fn add_worktree(&self, path: &Path, commit: &str) -> Result<(), PortError> {
@@ -96,29 +95,44 @@ impl GitPort for GitCli {
 
     fn merge(&self, path: &Path, commit: &str, message: &str) -> Result<MergeResult, PortError> {
         let rerere = ["-c", "rerere.enabled=true", "-c", "rerere.autoUpdate=true"];
+        let before = self.head(path)?;
         let mut args = rerere.to_vec();
         args.extend(["merge", "-q", "--no-ff", "--no-edit", "-m", message, commit]);
-        if self.run(path, &args)?.status.success() {
-            return Ok(MergeResult::Merged { by_rerere: false });
+        let merged = self.run(path, &args)?;
+        if merged.status.success() {
+            return Ok(if self.head(path)? == before {
+                MergeResult::AlreadyContained
+            } else {
+                MergeResult::Merged { by_rerere: false }
+            });
         }
+        let why = String::from_utf8_lossy(&merged.stderr).trim().to_string();
         if self.verify(path, "MERGE_HEAD")?.is_none() {
             return Err(PortError(format!(
-                "git merge {commit} failed before merging (see the worktree {})",
+                "git merge {commit} failed before merging, in the worktree {}: {why}",
                 path.display()
             )));
         }
-        let unmerged = lines(&self.ok_in(path, &["diff", "--name-only", "--diff-filter=U"])?);
+        let unmerged =
+            nul_separated(&self.ok_in(path, &["diff", "-z", "--name-only", "--diff-filter=U"])?);
         if !unmerged.is_empty() {
             return Ok(MergeResult::Conflict { paths: unmerged });
         }
+        if !why.contains("using previous resolution") {
+            return Err(PortError(format!(
+                "git merge {commit} stopped with nothing in conflict, in the worktree {}: {why}",
+                path.display()
+            )));
+        }
         let mut commit_args = rerere.to_vec();
-        commit_args.extend(["commit", "-q", "--no-edit"]);
+        commit_args.extend(["commit", "-q", "--no-edit", "--cleanup=strip"]);
         self.ok_in(path, &commit_args)?;
         Ok(MergeResult::Merged { by_rerere: true })
     }
 
     fn changed_paths(&self, base: &str, commit: &str) -> Result<Vec<String>, PortError> {
-        self.ok(&["diff", "--name-only", &format!("{base}...{commit}")]).map(|s| lines(&s))
+        let range = format!("{base}...{commit}");
+        self.ok(&["diff", "-z", "--no-renames", "--name-only", &range]).map(|s| nul_separated(&s))
     }
 
     fn head(&self, path: &Path) -> Result<String, PortError> {
@@ -136,6 +150,23 @@ impl GitPort for GitCli {
         if tree(a)?.trim() == tree(b)?.trim() {
             return Ok(Vec::new());
         }
-        self.ok(&["diff", "--name-only", a, b]).map(|s| lines(&s))
+        self.ok(&["diff", "-z", "--no-renames", "--name-only", a, b]).map(|s| nul_separated(&s))
+    }
+}
+
+/// Paths git printed with `-z`: as they are, never quoted.
+fn nul_separated(s: &str) -> Vec<String> {
+    s.split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect()
+}
+
+impl GitCli {
+    /// The main clone's folder (for a linked worktree, the clone it belongs to), as a real path.
+    pub fn main_clone(&self) -> Result<PathBuf, PortError> {
+        let common = self.ok(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+        let common = std::fs::canonicalize(common.trim()).map_err(|e| PortError(e.to_string()))?;
+        match common.file_name().and_then(|n| n.to_str()) {
+            Some(".git") => Ok(common.parent().map(Path::to_path_buf).unwrap_or(common)),
+            _ => Ok(common),
+        }
     }
 }

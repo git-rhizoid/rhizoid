@@ -56,16 +56,19 @@ test_run = "2026-11-20-walleye-display"
 tested_commit = "29d92793b"
 ```
 
-A branch is the local one, else `origin`'s. The device, the list name and the base must each fit in one part of a tag
+A branch is the local one, else `origin`'s: a local branch wins even when `origin`'s has moved on, and `--fetch` updates only
+`origin`'s, so push or reset a stale local topic first; the recipe names the sha that went in. The device, the list name and the base must each fit in one part of a tag
 name; anything else in the file is refused before anything is made.
 
 **What it does**, in order: reads the base, every branch and the `--reproduces` commit, and stops if one is missing;
 numbers the tag one past the highest `int/DEVICE/LIST/BASE/N`; makes a fresh worktree, detached at the base, in
-`${AGENT_WORKTREES:-~/.local/share/agent-worktrees}/REPO/rhizoid/` (`DEVICE-LIST-BASE-N`, or `--worktree`, which must be
-inside that folder - anywhere else is refused) and locks it with `git worktree lock --reason`, so several assembled
-worktrees stay alive until someone unlocks and removes one; turns on the clone's shared rerere memory
-(`rerere.enabled`, `rerere.autoUpdate` in its config); merges each branch with `git merge --no-ff`. A conflict rerere
-has a recorded resolution for is resolved and noted (`entry.N.rerere=resolved`). Any other conflict stops the run:
+`${AGENT_WORKTREES:-~/.local/share/agent-worktrees}/REPO/rhizoid/` (REPO is the main clone's folder name; `DEVICE-LIST-BASE-N`, or `--worktree`, which must
+be inside that folder - anywhere else is refused) and locks it with `git worktree lock --reason`, so several assembled
+worktrees stay alive until someone removes one (`git worktree unlock PATH && git worktree remove --force PATH`); turns on
+the clone's shared rerere memory (`rerere.enabled` in its config: a person's resolution is recorded too); merges each
+branch with `git merge --no-ff`, rerere replaying what it knows. How each entry went in is `entry.N.merged`: `merged`,
+`rerere-resolved` (its conflict replayed from a recorded resolution) or `already-in` (the base or an earlier entry held
+it; nothing merged). Any other conflict stops the run:
 it names the entry and the earlier entries that changed the same paths, and leaves the worktree mid-merge. Resolve
 it there and commit, and rerere remembers the resolution, so the next run gets through. When every branch is merged,
 it writes an annotated tag whose message carries the recipe: the base and its sha, and every entry with its sha.
@@ -85,6 +88,7 @@ entry.1.for=the display panel
 entry.1.state=known-good
 entry.1.test_run=2026-11-20-walleye-display
 entry.1.tested_commit=29d92793b
+entry.1.merged=merged
 worktree=/home/you/.local/share/agent-worktrees/linux/rhizoid/walleye-ufs-off-v6.18-1
 tag=int/walleye/ufs-off/v6.18/1
 tag_sha=...

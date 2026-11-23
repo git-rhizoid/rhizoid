@@ -41,8 +41,8 @@ pub trait GitPort {
     /// The tags whose names start with `prefix`.
     fn tags(&self, prefix: &str) -> Result<Vec<String>, PortError>;
 
-    /// Turn on the clone's shared rerere memory (`rerere.enabled`, `rerere.autoUpdate` in its config), so every
-    /// hand on the clone - rhizoid, a person resolving a conflict - records and replays the same resolutions.
+    /// Turn on the clone's shared rerere memory (`rerere.enabled` in its config), so every hand on the clone -
+    /// rhizoid, a person resolving a conflict - records and replays the same resolutions.
     fn share_rerere(&self) -> Result<(), PortError>;
 
     /// A fresh worktree at `path`, detached at `commit` (`git worktree add --detach`).
@@ -80,6 +80,8 @@ pub enum MergeResult {
         /// A conflict came up and every path of it was resolved from a recorded resolution.
         by_rerere: bool,
     },
+    /// The commit was already in the worktree's history: nothing was merged.
+    AlreadyContained,
     /// The merge stopped with these paths still in conflict; the worktree is left mid-merge.
     Conflict {
         /// The unmerged paths.

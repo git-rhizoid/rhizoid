@@ -124,6 +124,10 @@ fn list_from(name: &str, list: FileList) -> Result<List, String> {
         if e.purpose.trim().is_empty() {
             return Err(format!("{at}: `for` is empty - say what it is for"));
         }
+        let one_line = [Some(&e.purpose), e.test_run.as_ref(), e.tested_commit.as_ref()];
+        if one_line.iter().flatten().any(|s| s.chars().any(char::is_control)) {
+            return Err(format!("{at}: for, test_run and tested_commit are one line each"));
+        }
         let state = match (e.state.as_str(), e.test_run, e.tested_commit) {
             ("known-good", Some(test_run), Some(tested_commit)) => {
                 State::KnownGood { test_run, tested_commit }
@@ -180,12 +184,20 @@ pub fn tag_prefix(device: &str, list: &str, base: &str) -> String {
     format!("int/{device}/{list}/{base}/")
 }
 
-/// The next number after the tags already under `prefix` (1 when there are none).
-pub fn next_number(tags: &[String], prefix: &str) -> u32 {
-    tags.iter()
-        .filter_map(|t| t.strip_prefix(prefix)?.parse::<u32>().ok())
-        .max()
-        .map_or(1, |n| n + 1)
+/// The next number after the tags already under `prefix` (1 when there are none); only digits count.
+pub fn next_number(tags: &[String], prefix: &str) -> Result<u32, String> {
+    let highest = tags
+        .iter()
+        .filter_map(|t| t.strip_prefix(prefix))
+        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .filter_map(|n| n.parse::<u32>().ok())
+        .max();
+    match highest {
+        None => Ok(1),
+        Some(n) => {
+            n.checked_add(1).ok_or_else(|| format!("{prefix}{n} is the last number a tag can have"))
+        }
+    }
 }
 
 /// The earlier entries that changed any of the conflicted paths, in list order.
@@ -262,8 +274,30 @@ pub struct Merged {
     pub entry: Entry,
     /// The commit its branch was at.
     pub sha: String,
-    /// A conflict came up and rerere resolved it from a recorded resolution.
-    pub rerere: bool,
+    /// How it went in.
+    pub merged: How,
+}
+
+/// How an entry went in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum How {
+    /// A merge commit, without a conflict.
+    Merged,
+    /// A merge commit; its conflict was resolved from rerere's recorded resolution.
+    RerereResolved,
+    /// Nothing: the base or an earlier entry already held it.
+    AlreadyIn,
+}
+
+impl How {
+    fn word(self) -> &'static str {
+        match self {
+            How::Merged => "merged",
+            How::RerereResolved => "rerere-resolved",
+            How::AlreadyIn => "already-in",
+        }
+    }
 }
 
 /// Where a run stopped at a conflict.
@@ -348,9 +382,7 @@ impl Report {
                 }
                 State::Trying => kv.push((k("state"), "trying".to_string())),
             }
-            if m.rerere {
-                kv.push((k("rerere"), "resolved".to_string()));
-            }
+            kv.push((k("merged"), m.merged.word().to_string()));
         }
         kv
     }
@@ -409,7 +441,7 @@ pub fn assemble(git: &impl GitPort, ask: &Ask) -> Result<Report, AssembleError> 
     let shas = entry_commits(git, &ask.list.entries)?;
     let reproduces = ask.reproduces.map(|c| commit_or_refuse(git, c)).transpose()?;
     let prefix = tag_prefix(ask.device, ask.list_name, &ask.list.base);
-    let n = next_number(&git.tags(&prefix)?, &prefix);
+    let n = next_number(&git.tags(&prefix)?, &prefix).map_err(AssembleError)?;
     let tag = format!("{prefix}{n}");
     let worktree = worktree_for(ask, n)?;
 
@@ -436,7 +468,12 @@ pub fn assemble(git: &impl GitPort, ask: &Ask) -> Result<Report, AssembleError> 
             MergeResult::Merged { by_rerere } => report.entries.push(Merged {
                 entry: entry.clone(),
                 sha: sha.clone(),
-                rerere: by_rerere,
+                merged: if by_rerere { How::RerereResolved } else { How::Merged },
+            }),
+            MergeResult::AlreadyContained => report.entries.push(Merged {
+                entry: entry.clone(),
+                sha: sha.clone(),
+                merged: How::AlreadyIn,
             }),
             MergeResult::Conflict { paths } => {
                 report.conflict = Some(conflict(git, &base_sha, &report.entries, entry, paths)?);
@@ -571,10 +608,17 @@ mod tests {
     #[test]
     fn the_next_number_follows_the_highest_tag_of_the_same_prefix() {
         let p = tag_prefix("dev", "two", "v1");
-        assert_eq!(next_number(&[], &p), 1);
-        let tags = ["int/dev/two/v1/1", "int/dev/two/v1/7", "int/dev/two/v1/x", "int/dev/two/v2/9"];
-        let tags: Vec<String> = tags.iter().map(|t| t.to_string()).collect();
-        assert_eq!(next_number(&tags, &p), 8);
+        let tags = |t: &[&str]| t.iter().map(|t| t.to_string()).collect::<Vec<String>>();
+        assert_eq!(next_number(&[], &p), Ok(1));
+        let some = tags(&[
+            "int/dev/two/v1/1",
+            "int/dev/two/v1/7",
+            "int/dev/two/v1/x",
+            "int/dev/two/v1/+9",
+            "int/dev/two/v2/9",
+        ]);
+        assert_eq!(next_number(&some, &p), Ok(8));
+        assert!(next_number(&tags(&["int/dev/two/v1/4294967295"]), &p).is_err());
     }
 
     #[test]
