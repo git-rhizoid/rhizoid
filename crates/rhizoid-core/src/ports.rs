@@ -6,9 +6,9 @@
 //! `auth-via-gh`) can be swapped or, for now, simply not exist yet without
 //! blocking everything that sits above it.
 //!
-//! No implementation lives in this crate yet - see the design log's
-//! `design-boundary-layer` entry for why that is a deliberate scope cut for
-//! this pass, not an oversight.
+//! No implementation lives in this crate: the adapters are in `rhizoid-cli`
+//! (`GitCli` for [`GitPort`]; the GitHub one is not built yet - see the design
+//! log's `design-boundary-layer` entry).
 
 /// What Rhizoid needs from GitHub itself, independent of local git state.
 pub trait GitHubPort {
@@ -25,11 +25,68 @@ pub trait GitHubPort {
     fn repo_exists(&self, full_name: &str) -> Result<bool, PortError>;
 }
 
-/// What Rhizoid needs from local git operations against a module's own
-/// `.rhizoid/module.toml`.
+/// What Rhizoid needs from one local clone, as git's own work: rhizoid drives the git CLI for it
+/// (decision `2026-11-23-standard-tools-drive-cut-or-write`), so worktrees and the rerere memory are
+/// exactly the ones a person's git sees. The real adapter is `rhizoid-cli`'s `GitCli`.
 pub trait GitPort {
-    /// The commit a fork's tracking branch currently points at.
-    fn current_commit(&self, fork: &str, branch: &str) -> Result<String, PortError>;
+    /// Fetch every remote, pruning the branches they no longer have (`git fetch --all --prune`).
+    fn fetch_prune(&self) -> Result<(), PortError>;
+
+    /// The commit `rev` names (a tag, a branch, a sha), or `None` when the clone has none.
+    fn commit(&self, rev: &str) -> Result<Option<String>, PortError>;
+
+    /// The commit branch `name` points at: the local branch, else `origin`'s; `None` when neither exists.
+    fn branch(&self, name: &str) -> Result<Option<String>, PortError>;
+
+    /// The tags whose names start with `prefix`.
+    fn tags(&self, prefix: &str) -> Result<Vec<String>, PortError>;
+
+    /// Turn on the clone's shared rerere memory (`rerere.enabled` in its config), so every hand on the clone -
+    /// rhizoid, a person resolving a conflict - records and replays the same resolutions.
+    fn share_rerere(&self) -> Result<(), PortError>;
+
+    /// A fresh worktree at `path`, detached at `commit` (`git worktree add --detach`).
+    fn add_worktree(&self, path: &std::path::Path, commit: &str) -> Result<(), PortError>;
+
+    /// Lock the worktree at `path` so `git worktree prune` keeps it (`git worktree lock --reason`).
+    fn lock_worktree(&self, path: &std::path::Path, reason: &str) -> Result<(), PortError>;
+
+    /// Merge `commit` into the worktree at `path` as a merge commit with `message`, rerere on.
+    fn merge(
+        &self,
+        path: &std::path::Path,
+        commit: &str,
+        message: &str,
+    ) -> Result<MergeResult, PortError>;
+
+    /// The paths `commit` changed since it left `base` (`git diff --name-only base...commit`).
+    fn changed_paths(&self, base: &str, commit: &str) -> Result<Vec<String>, PortError>;
+
+    /// The commit the worktree at `path` is at.
+    fn head(&self, path: &std::path::Path) -> Result<String, PortError>;
+
+    /// An annotated tag `name` on `commit` with `message`; the tag object's sha.
+    fn tag(&self, name: &str, commit: &str, message: &str) -> Result<String, PortError>;
+
+    /// The paths whose content differs between the trees of `a` and `b`; empty when the trees are equal.
+    fn tree_diff(&self, a: &str, b: &str) -> Result<Vec<String>, PortError>;
+}
+
+/// How one merge into a worktree ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeResult {
+    /// The merge commit was made; `by_rerere` when a conflict was resolved from rerere's memory.
+    Merged {
+        /// A conflict came up and every path of it was resolved from a recorded resolution.
+        by_rerere: bool,
+    },
+    /// The commit was already in the worktree's history: nothing was merged.
+    AlreadyContained,
+    /// The merge stopped with these paths still in conflict; the worktree is left mid-merge.
+    Conflict {
+        /// The unmerged paths.
+        paths: Vec<String>,
+    },
 }
 
 /// The result of a `merge_upstream` call: whether anything actually changed.

@@ -9,6 +9,7 @@
 //!   rhizoid refresh [MODULE]
 //!   rhizoid remove MODULE
 //!   rhizoid status [--graph FILE] [--root DIR] [--fetch] [--json]   every edge of a repository graph, read-only
+//!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
 //!   rhizoid completions SHELL | man | --version | --help
 //! ```
 
@@ -24,13 +25,24 @@ pub enum Command {
     Refresh,
     Remove,
     Status,
+    Assemble,
     Completions,
     Man,
 }
 
 impl Command {
-    pub const TOKENS: &'static [&'static str] =
-        &["init", "add", "import", "update", "refresh", "remove", "status", "completions", "man"];
+    pub const TOKENS: &'static [&'static str] = &[
+        "init",
+        "add",
+        "import",
+        "update",
+        "refresh",
+        "remove",
+        "status",
+        "assemble",
+        "completions",
+        "man",
+    ];
     /// The commands that take one module or repository as their first argument.
     pub const TARGETED: &'static [Command] =
         &[Command::Add, Command::Import, Command::Update, Command::Refresh, Command::Remove];
@@ -46,6 +58,7 @@ impl FromRaw for Command {
             "refresh" => Command::Refresh,
             "remove" => Command::Remove,
             "status" => Command::Status,
+            "assemble" => Command::Assemble,
             "completions" => Command::Completions,
             "man" => Command::Man,
             _ => return None,
@@ -152,9 +165,9 @@ contract! {
         key: "fetch",
         ty: Type::Bool,
         default: Some(false),
-        subcommands: &[Command::Status],
+        subcommands: &[Command::Status, Command::Assemble],
         arg: Some(Arg::long("fetch")),
-        summary: "Fetch each clone's tags and branches first (otherwise status reads the clones as they are).",
+        summary: "Fetch first: status, each clone's tags and branches; assemble, every remote of the clone, pruning (otherwise the clones are read as they are).",
         ..Input::EMPTY
     };
 
@@ -162,9 +175,64 @@ contract! {
         key: "json",
         ty: Type::Bool,
         default: Some(false),
-        subcommands: &[Command::Status],
+        subcommands: &[Command::Status, Command::Assemble],
         arg: Some(Arg::long("json")),
-        summary: "Print the findings as JSON.",
+        summary: "Print the report as JSON (status: the findings; assemble: the recipe and the outcome).",
+        ..Input::EMPTY
+    };
+
+    LIST: String, Command = Input {
+        key: "list",
+        ty: Type::String,
+        subcommands: &[Command::Assemble],
+        arg: Some(Arg { value_name: "LIST", ..Arg::positional(0) }),
+        summary: "The named list to assemble ([lists.LIST] of the list file).",
+        ..Input::EMPTY
+    };
+
+    LISTS: String, Command = Input {
+        key: "lists",
+        ty: Type::String,
+        subcommands: &[Command::Assemble],
+        env: Some(Env::new("RHIZOID_LISTS")),
+        arg: Some(Arg { value_name: "FILE", ..Arg::long("lists") }),
+        summary: "The lab's list file (kernel/topics.toml here when none is given).",
+        ..Input::EMPTY
+    };
+
+    REPO: String, Command = Input {
+        key: "repo",
+        ty: Type::String,
+        subcommands: &[Command::Assemble],
+        env: Some(Env::new("RHIZOID_REPO")),
+        arg: Some(Arg { value_name: "DIR", ..Arg::long("repo") }),
+        summary: "The clone the branches are in (the current folder when none is given).",
+        ..Input::EMPTY
+    };
+
+    WORKTREE: String, Command = Input {
+        key: "worktree",
+        ty: Type::String,
+        subcommands: &[Command::Assemble],
+        arg: Some(Arg { value_name: "DIR", ..Arg::long("worktree") }),
+        summary: "The fresh worktree to assemble in; it must be inside AGENT_WORKTREES/REPO/rhizoid (DEVICE-LIST-BASE-N there when none is given).",
+        ..Input::EMPTY
+    };
+
+    REPRODUCES: String, Command = Input {
+        key: "reproduces",
+        ty: Type::String,
+        subcommands: &[Command::Assemble],
+        arg: Some(Arg { value_name: "COMMIT", ..Arg::long("reproduces") }),
+        summary: "A commit whose tree the tag's tree must equal; the paths that differ are listed.",
+        ..Input::EMPTY
+    };
+
+    AGENT_WORKTREES: String = Input {
+        key: "agent_worktrees",
+        ty: Type::String,
+        env: Some(Env::new("AGENT_WORKTREES")),
+        summary: "The agent worktree home (~/.local/share/agent-worktrees when unset); assemble's worktrees go in REPO/rhizoid under it.",
         ..Input::EMPTY
     };
 

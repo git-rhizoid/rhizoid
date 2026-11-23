@@ -7,6 +7,7 @@
 
 mod cli;
 mod commands;
+mod git_cli;
 mod git_repos;
 mod manifest_io;
 
@@ -19,8 +20,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const MAN_DATE: &str = "2026-11-18";
-const ABOUT: &str = "Fork, own and sync git dependencies, and report every edge of a repository graph (rhizoid status)";
+const MAN_DATE: &str = "2026-11-23";
+const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), and assemble test kernels from lists of branches (rhizoid assemble)";
 
 const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command { name: "init", summary: "Write a fresh rhizoid.toml" },
@@ -33,6 +34,10 @@ const COMMANDS: &[generate::Command<'static>] = &[
         name: "status",
         summary: "Every edge of a repository graph: current, behind or moved by hand, and how",
     },
+    generate::Command {
+        name: "assemble",
+        summary: "Merge a named list of branches onto its base in a fresh worktree, and tag it int/DEVICE/LIST/BASE/N",
+    },
     generate::Command { name: "completions", summary: "Shell completions for rhizoid" },
     generate::Command { name: "man", summary: "The manual page, in roff" },
 ];
@@ -44,9 +49,9 @@ fn program() -> Program<'static> {
         about: ABOUT,
         commands: COMMANDS,
         exit_status: &[
-            ("0", "done; for status, no edge is drift"),
-            ("1", "status found drift, or the command failed"),
-            ("2", "the invocation is wrong, or status could not read the repositories it was asked about"),
+            ("0", "done; for status, no edge is drift; for assemble, tagged (and equal to --reproduces)"),
+            ("1", "status found drift; assemble stopped at a conflict or differs from --reproduces; or the command failed"),
+            ("2", "the invocation is wrong, or status or assemble could not read or change the repositories it was asked about"),
         ],
         see_also: &["git(1)", "gh(1)"],
         date: MAN_DATE,
@@ -78,6 +83,7 @@ enum Request {
     Remove { dir: PathBuf, module: String },
     Unbuilt { verb: Verb, target: Option<String> },
     Status(Ask),
+    Assemble(commands::assemble::Ask),
     Completions(Shell),
     Man,
 }
@@ -135,6 +141,27 @@ fn request(r: &Resolution) -> Result<Request, String> {
                 json: Contract::JSON.get_from(r).unwrap_or(false),
             })
         }
+        Command::Assemble => Request::Assemble(commands::assemble::Ask {
+            list: Contract::LIST.get_from(r).ok_or("assemble needs the name of a list")?,
+            lists: match Contract::LISTS.get_from(r).filter(|s| !s.is_empty()) {
+                Some(f) => f.into(),
+                None => current_dir()?.join("kernel/topics.toml"),
+            },
+            repo: match Contract::REPO.get_from(r).filter(|s| !s.is_empty()) {
+                Some(d) => d.into(),
+                None => current_dir()?,
+            },
+            worktrees: match Contract::AGENT_WORKTREES.get_from(r).filter(|s| !s.is_empty()) {
+                Some(d) => d.into(),
+                None => {
+                    commands::assemble::default_worktrees(Contract::HOME.get_from(r).as_deref())?
+                }
+            },
+            worktree: Contract::WORKTREE.get_from(r).filter(|s| !s.is_empty()).map(Into::into),
+            fetch: Contract::FETCH.get_from(r).unwrap_or(false),
+            reproduces: Contract::REPRODUCES.get_from(r).filter(|s| !s.is_empty()),
+            json: Contract::JSON.get_from(r).unwrap_or(false),
+        }),
         Command::Completions => {
             let shell = Contract::SHELL.get_from(r).and_then(|s| Shell::parse(&s));
             Request::Completions(
@@ -168,6 +195,14 @@ fn main() -> ExitCode {
         Ok(Request::Status(ask)) => match commands::status::run(&ask) {
             Ok(false) => ExitCode::SUCCESS,
             Ok(true) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("rhizoid: {e}");
+                ExitCode::from(2)
+            }
+        },
+        Ok(Request::Assemble(ask)) => match commands::assemble::run(&ask) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
             Err(e) => {
                 eprintln!("rhizoid: {e}");
                 ExitCode::from(2)
