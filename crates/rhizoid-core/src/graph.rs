@@ -101,6 +101,12 @@ fn default_part_file() -> String {
 fn default_items() -> String {
     "data/upstream_items.json".to_string()
 }
+fn default_own_key() -> String {
+    "own".to_string()
+}
+fn default_why_key() -> String {
+    "why".to_string()
+}
 
 /// The whole graph: the revision every clone is read at, where clones differ from their names, and the edges by kind.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -184,6 +190,13 @@ pub struct Slice {
     /// The follower's file of upstream items, which say a changed own file is on its way up.
     #[serde(default = "default_items")]
     pub items: String,
+    /// The pin file's list of files the follower keeps as its own.
+    #[serde(default = "default_own_key")]
+    pub own_key: String,
+    /// The pin file's table of why each own file is kept: a reason (the file is declared own), or
+    /// `upstream:ITEM` (it is on its way up, as an upstream item would say).
+    #[serde(default = "default_why_key")]
+    pub why_key: String,
     /// A command a bump must pass before it is committed (argv, run in the follower's worktree once laid).
     #[serde(default)]
     pub gate: Option<Vec<String>>,

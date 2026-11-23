@@ -72,17 +72,7 @@ pub fn follow(
         .as_deref()
         .map(|t| captured(t, "version = \"", "\"").join("\n"))
         .unwrap_or_default();
-    // the shell's `case " $own " in *" $f "*`: the list's quotes and spaces dropped, commas made spaces, its lines
-    // joined by newlines - an entry is own only between spaces
-    let own: String = pin_text
-        .as_deref()
-        .map(|t| captured(t, "own = [", "]").join("\n"))
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| *c != '"' && *c != ' ')
-        .collect::<String>()
-        .replace(',', " ");
-    let is_own = |f: &str| format!(" {own} ").contains(&format!(" {f} "));
+    let is_own = |f: &str| pin_text.as_deref().is_some_and(|t| reads_as_own(t, f));
 
     let begin = format!("{mark}:begin");
     let io = |e: std::io::Error, p: &Path| PortError(format!("{}: {e}", p.display()));
@@ -222,6 +212,20 @@ fn owner_repo(url: &str) -> String {
 }
 
 /// The middle of each line that starts with `before` and ends with `after` (sed `s/^before\(.*\)after$/\1/p`).
+/// Whether follow reads `file` as one of the base's own in its pin file `pin_text`, as the shell does: `case " $own "
+/// in *" $f "*`, with `own` the one-line `own = [...]` lists, their quotes and spaces dropped, commas made spaces
+/// and the lines joined by newlines - an entry is own only between spaces. Status asks it before it says follow
+/// leaves a file whole.
+pub fn reads_as_own(pin_text: &str, file: &str) -> bool {
+    let own: String = captured(pin_text, "own = [", "]")
+        .join("\n")
+        .chars()
+        .filter(|c| *c != '"' && *c != ' ')
+        .collect::<String>()
+        .replace(',', " ");
+    format!(" {own} ").contains(&format!(" {file} "))
+}
+
 fn captured(text: &str, before: &str, after: &str) -> Vec<String> {
     raw_lines(text)
         .filter_map(|l| {

@@ -34,6 +34,16 @@ no longer has, then its tags without pruning and never forced, so a tag made loc
 of the graph (see the cutting verbs below); rhizoid.toml, its manifest and `init` are gone (decision
 2026-11-23-cuttings-live-in-the-graph).
 
+**A slice follower's own files are read as declared** (idealkb decision 2026-11-23-own-files-read-as-declared).
+The follower's pin file names them in a list and says why each is kept in a table; the `[[slice]]` edge gives both
+names (`own_key`, default `own`; `why_key`, default `why`). An own file that differs from the source's at the pin is
+`current` when `[why]` gives it a reason, printed with it (and a release since the pin that changed it, as follow says); `moved-by-hand` when the reason is `upstream:ITEM` (on its
+way up, carried when the follower's upstream items name it) or when there is none - the reason is required. An own
+file that holds the source's marked part (`part_file`) reads the same way: `follow` leaves an own file whole, its
+part too, so a part that differs or is missing in a file with a reason is the follower's, declared. Status says
+what `follow` would do: follow reads own as follow.sh does, from a one-line `own = [...]`, and a part file it does
+not read as own is `behind` (follow again lays its part), whatever its reason.
+
 **An integration edge** (`[[integration]]`) reads one repository whose branches `rhizoid assemble` merges into
 tags, against what the graph gives it - every name is the graph's, none is rhizoid's:
 
