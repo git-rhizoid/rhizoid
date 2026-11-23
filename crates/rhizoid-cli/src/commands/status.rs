@@ -5,7 +5,7 @@
 //! is drift, 1 when something is, 2 when the world could not be read.
 
 use crate::git_repos::GitRepos;
-use rhizoid_core::{drift_count, status, summary, Finding, Graph};
+use rhizoid_core::{drift_count, integration_status, status, summary, Finding, Graph};
 use std::path::{Path, PathBuf};
 
 /// The graph file read when none is named.
@@ -48,7 +48,8 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
         .map_err(|e| format!("cannot read the graph file {}: {e}", ask.graph.display()))?;
     let graph = Graph::parse(&text).map_err(|e| format!("{}: {e}", ask.graph.display()))?;
     let repos = GitRepos::new(&ask.root, &graph, ask.fetch);
-    let findings = status(&graph, &repos).map_err(|e| e.to_string())?;
+    let mut findings = status(&graph, &repos).map_err(|e| e.to_string())?;
+    findings.extend(integration_status(&graph.integrations, &repos).map_err(|e| e.to_string())?);
     write_report(&mut std::io::stdout().lock(), &render(&findings, ask.json))?;
     Ok(drift_count(&findings) > 0)
 }

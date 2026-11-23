@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 pub struct Ask {
     /// The list's name in the file.
     pub list: String,
-    /// The lab's list file.
+    /// The list file.
     pub lists: PathBuf,
     /// The clone the branches are in.
     pub repo: PathBuf,
@@ -45,7 +45,8 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
     let report = assemble(
         &git,
         &CoreAsk {
-            device: &lists.device,
+            name: lists.name.as_deref(),
+            tag: &lists.tag,
             list_name: &ask.list,
             list,
             home: &home,
@@ -105,4 +106,14 @@ fn real_as_far_as_it_exists(wanted: &Path) -> Result<PathBuf, String> {
         real.push(n);
     }
     Ok(real)
+}
+
+/// `rhizoid assemble --done TAG`: unlock and remove the worktree assemble locked for TAG; print what went.
+pub fn done(repo: &Path, tag: &str, force: bool) -> Result<(), String> {
+    let path =
+        rhizoid_core::assemble::done(&GitCli::new(repo), tag, force).map_err(|e| e.to_string())?;
+    crate::commands::status::write_report(
+        &mut std::io::stdout().lock(),
+        &format!("done={tag}\nremoved={path}\n"),
+    )
 }

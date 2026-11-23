@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAN_DATE: &str = "2026-11-23";
-const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), and assemble test kernels from lists of branches (rhizoid assemble)";
+const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), and merge a named list of branches onto a base into a tag (rhizoid assemble)";
 
 const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command { name: "init", summary: "Write a fresh rhizoid.toml" },
@@ -84,6 +84,7 @@ enum Request {
     Unbuilt { verb: Verb, target: Option<String> },
     Status(Ask),
     Assemble(commands::assemble::Ask),
+    AssembleDone { tag: String, repo: PathBuf, force: bool },
     Completions(Shell),
     Man,
 }
@@ -141,12 +142,23 @@ fn request(r: &Resolution) -> Result<Request, String> {
                 json: Contract::JSON.get_from(r).unwrap_or(false),
             })
         }
+        Command::Assemble if Contract::DONE.get_from(r).is_some_and(|t| !t.is_empty()) => {
+            Request::AssembleDone {
+                tag: Contract::DONE.get_from(r).unwrap_or_default(),
+                repo: match Contract::REPO.get_from(r).filter(|s| !s.is_empty()) {
+                    Some(d) => d.into(),
+                    None => current_dir()?,
+                },
+                force: Contract::FORCE.get_from(r).unwrap_or(false),
+            }
+        }
         Command::Assemble => Request::Assemble(commands::assemble::Ask {
             list: Contract::LIST.get_from(r).ok_or("assemble needs the name of a list")?,
-            lists: match Contract::LISTS.get_from(r).filter(|s| !s.is_empty()) {
-                Some(f) => f.into(),
-                None => current_dir()?.join("kernel/topics.toml"),
-            },
+            lists: Contract::LISTS
+                .get_from(r)
+                .filter(|s| !s.is_empty())
+                .ok_or("assemble needs the list file: --lists FILE, or RHIZOID_LISTS")?
+                .into(),
             repo: match Contract::REPO.get_from(r).filter(|s| !s.is_empty()) {
                 Some(d) => d.into(),
                 None => current_dir()?,
@@ -200,6 +212,15 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Ok(Request::AssembleDone { tag, repo, force }) => {
+            match commands::assemble::done(&repo, &tag, force) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("rhizoid: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Ok(Request::Assemble(ask)) => match commands::assemble::run(&ask) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,

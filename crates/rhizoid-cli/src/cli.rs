@@ -10,6 +10,7 @@
 //!   rhizoid remove MODULE
 //!   rhizoid status [--graph FILE] [--root DIR] [--fetch] [--json]   every edge of a repository graph, read-only
 //!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
+//!   rhizoid assemble --done TAG [--repo DIR] [--force]  end a tag's worktree
 //!   rhizoid completions SHELL | man | --version | --help
 //! ```
 
@@ -109,9 +110,9 @@ contract! {
         key: "force",
         ty: Type::Bool,
         default: Some(false),
-        subcommands: &[Command::Init],
+        subcommands: &[Command::Init, Command::Assemble],
         arg: Some(Arg::long("force")),
-        summary: "Overwrite an existing rhizoid.toml.",
+        summary: "init: overwrite an existing rhizoid.toml; assemble --done: remove the worktree even with changes in it.",
         ..Input::EMPTY
     };
 
@@ -196,7 +197,7 @@ contract! {
         subcommands: &[Command::Assemble],
         env: Some(Env::new("RHIZOID_LISTS")),
         arg: Some(Arg { value_name: "FILE", ..Arg::long("lists") }),
-        summary: "The lab's list file (kernel/topics.toml here when none is given).",
+        summary: "The list file: its named lists, its tag template, the branches a list may name (no default: every user keeps its own).",
         ..Input::EMPTY
     };
 
@@ -216,6 +217,15 @@ contract! {
         subcommands: &[Command::Assemble],
         arg: Some(Arg { value_name: "DIR", ..Arg::long("worktree") }),
         summary: "The fresh worktree to assemble in; it must be inside AGENT_WORKTREES/REPO/rhizoid (DEVICE-LIST-BASE-N there when none is given).",
+        ..Input::EMPTY
+    };
+
+    DONE: String, Command = Input {
+        key: "done",
+        ty: Type::String,
+        subcommands: &[Command::Assemble],
+        arg: Some(Arg { value_name: "TAG", ..Arg::long("done") }),
+        summary: "End a tag's worktree instead of assembling: unlock and remove it (refused when it has changes, unless --force).",
         ..Input::EMPTY
     };
 

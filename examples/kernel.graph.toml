@@ -1,0 +1,22 @@
+# An integration edge for `rhizoid status`, laid out as linux-phone-oco's kernel clone uses it - one example among
+# any. Every name is the graph's choice, not rhizoid's. Kept apart from linux-phone-oco.graph.toml, whose edges
+# tests/agree-with-graph-drift.sh compares one by one with the shell they replace.
+
+[clones]
+"grenudi/linux" = "linux-phone-oco/linux"
+
+[[integration]]
+repo = "grenudi/linux"
+release_prefix = "v"                        # v6.18, v6.18-rc3, v6.18.5: always in the scheme
+topics = ["topic/ITEM", "backport/ITEM/BASE"]   # what lists merge: on the newest release, or on BASE; equal to origin's
+assembled = "int/NAME/LIST/BASE/N"          # the tags assemble makes here: one of this shape without a recipe was made by hand
+
+# the names branches and tags may have (structure review, 2026-11-23: test kernels are int/ tags, never branches)
+[integration.scheme]
+branches = ["main", "master", "topic/ITEM", "backport/ITEM/BASE", "wip/LANE/WHAT"]
+tags = ["topic/ITEM/vN", "int/NAME/LIST/BASE/N", "archive/NAME"]
+
+# the fork and its upstream: an edge of its own, read with git ls-remote
+[[fork]]
+fork = "grenudi/linux"
+upstream = "sm7150-mainline/linux"

@@ -3,7 +3,7 @@
 //! Git runs with `LC_ALL=C`, so what it says on stderr is what this reads it as.
 
 use rhizoid_core::graph::{Remote, RepoName};
-use rhizoid_core::{Graph, Level, RepoError, Repos};
+use rhizoid_core::{Graph, IntegrationReads, Level, RepoError, Repos, Worktree};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -27,12 +27,18 @@ impl<'a> GitRepos<'a> {
             return Err(RepoError::NoClone(dir.display().to_string()));
         }
         if self.fetch && self.fetched.borrow_mut().insert(repo.clone()) {
-            let out = git(&dir, &["fetch", "-q", "--tags", "origin"])?;
-            if !out.status.success() {
-                return Err(RepoError::Failed(format!(
-                    "{repo}: git fetch failed: {}",
-                    stderr(&out)
-                )));
+            // Branches pruned, then tags fetched without pruning: a tag made here (an int tag) stays.
+            for args in [
+                ["fetch", "-q", "--prune", "--no-prune-tags", "origin"],
+                ["fetch", "-q", "--tags", "--no-prune-tags", "origin"],
+            ] {
+                let out = git(&dir, &args)?;
+                if !out.status.success() {
+                    return Err(RepoError::Failed(format!(
+                        "{repo}: git fetch failed: {}",
+                        stderr(&out)
+                    )));
+                }
             }
         }
         Ok(dir)
@@ -110,6 +116,97 @@ impl Repos for GitRepos<'_> {
             Ok(o) => Level::Unknown(format!("gh api: {}", stderr(&o))),
             Err(e) => Level::Unknown(format!("cannot run gh: {e}")),
         }
+    }
+}
+
+impl GitRepos<'_> {
+    /// git in the clone of `repo`, which must succeed; its stdout.
+    fn read(&self, repo: &RepoName, args: &[&str]) -> Result<String, RepoError> {
+        let out = git(&self.clone_dir(repo)?, args)?;
+        if !out.status.success() {
+            return Err(RepoError::Failed(format!(
+                "{repo}: git {}: {}",
+                args.join(" "),
+                stderr(&out)
+            )));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+impl IntegrationReads for GitRepos<'_> {
+    fn refs(&self, repo: &RepoName, namespace: &str) -> Result<Vec<(String, String)>, RepoError> {
+        let format = "--format=%(refname)%00%(objectname)%00%(*objectname)";
+        let out = self.read(repo, &["for-each-ref", format, namespace])?;
+        Ok(out
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split('\0');
+                let (name, object, peeled) = (f.next()?, f.next()?, f.next().unwrap_or(""));
+                let commit = if peeled.is_empty() { object } else { peeled };
+                Some((name.strip_prefix(namespace)?.to_string(), commit.to_string()))
+            })
+            .collect())
+    }
+
+    fn is_ancestor(&self, repo: &RepoName, a: &str, b: &str) -> Result<bool, RepoError> {
+        let out = git(&self.clone_dir(repo)?, &["merge-base", "--is-ancestor", a, b])?;
+        match out.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => {
+                Err(RepoError::Failed(format!("{repo}: git merge-base {a} {b}: {}", stderr(&out))))
+            }
+        }
+    }
+
+    fn count(&self, repo: &RepoName, from: &str, to: &str) -> Result<u64, RepoError> {
+        let n = self.read(repo, &["rev-list", "--count", &format!("{from}..{to}")])?;
+        n.trim()
+            .parse()
+            .map_err(|_| RepoError::Failed(format!("{repo}: git rev-list --count said {n}")))
+    }
+
+    fn nearest_release(
+        &self,
+        repo: &RepoName,
+        rev: &str,
+        prefix: &str,
+    ) -> Result<Option<String>, RepoError> {
+        let pattern = format!("{prefix}[0-9]*");
+        let out = git(
+            &self.clone_dir(repo)?,
+            &["describe", "--tags", "--abbrev=0", "--match", &pattern, rev],
+        )?;
+        Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+    }
+
+    fn tag_messages(&self, repo: &RepoName) -> Result<Vec<(String, String)>, RepoError> {
+        // one read for every tag: an annotated one's message, each record ended by NUL and git's newline
+        let format = "--format=%(objecttype)%00%(refname:strip=2)%00%(contents)%00";
+        let out = self.read(repo, &["for-each-ref", format, "refs/tags/"])?;
+        Ok(out
+            .split("\0\n")
+            .filter_map(|record| {
+                let mut f = record.splitn(3, '\0');
+                match (f.next(), f.next(), f.next()) {
+                    (Some("tag"), Some(name), Some(message)) => {
+                        Some((name.to_string(), message.to_string()))
+                    }
+                    _ => None,
+                }
+            })
+            .collect())
+    }
+
+    fn tree_equal(&self, repo: &RepoName, a: &str, b: &str) -> Result<bool, RepoError> {
+        let tree = |r: &str| self.read(repo, &["rev-parse", &format!("{r}^{{tree}}")]);
+        Ok(tree(a)?.trim() == tree(b)?.trim())
+    }
+
+    fn worktrees(&self, repo: &RepoName) -> Result<Vec<Worktree>, RepoError> {
+        crate::git_cli::worktrees(&self.clone_dir(repo)?)
+            .map_err(|e| RepoError::Failed(format!("{repo}: {e}")))
     }
 }
 

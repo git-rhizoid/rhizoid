@@ -1,6 +1,6 @@
 # AGENTS.md - how to work in rhizoid
 
-**Owner**: `git-rhizoid-builder` - the role that keeps this repository, whichever session holds it (signing as `git-rhizoid-builder.RUN`); another session sends it the change - a message, or an upstream item naming git-rhizoid/rhizoid - and does not land here itself. The design log and the backlog are in [`git-rhizoid.github.io`](https://github.com/git-rhizoid/git-rhizoid.github.io) (`rank` is the order: since 2026-11-23, assemble, status over kernel edges, send-back, pins in one place, then follow and cuttings).
+**Owner**: `git-rhizoid-builder` - the role that keeps this repository, whichever session holds it (signing as `git-rhizoid-builder.RUN`); another session sends it the change - a message, or an upstream item naming git-rhizoid/rhizoid - and does not land here itself. The design log and the backlog are in [`git-rhizoid.github.io`](https://github.com/git-rhizoid/git-rhizoid.github.io) (`rank` is the order: since 2026-11-23, assemble, status over integration edges, send-back, pins in one place, then follow and cuttings).
 
 Fork, own, and sync git dependencies instead of relying on a package manager - see the README for
 what that means and [`git-rhizoid/git-rhizoid.github.io`](https://github.com/git-rhizoid/git-rhizoid.github.io)
