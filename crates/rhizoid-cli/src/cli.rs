@@ -11,6 +11,7 @@
 //!   rhizoid status [--graph FILE] [--root DIR] [--fetch] [--json]   every edge of a repository graph, read-only
 //!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
 //!   rhizoid assemble --done TAG [--repo DIR] [--force]  end a tag's worktree
+//!   rhizoid send-back BRANCH --onto REF --out DIR [--config FILE] [--tested SHA] [--fork ID] [--repo DIR] [--json]
 //!   rhizoid completions SHELL | man | --version | --help
 //! ```
 
@@ -27,6 +28,8 @@ pub enum Command {
     Remove,
     Status,
     Assemble,
+    #[serde(rename = "send-back")]
+    SendBack,
     Completions,
     Man,
 }
@@ -41,6 +44,7 @@ impl Command {
         "remove",
         "status",
         "assemble",
+        "send-back",
         "completions",
         "man",
     ];
@@ -60,6 +64,7 @@ impl FromRaw for Command {
             "remove" => Command::Remove,
             "status" => Command::Status,
             "assemble" => Command::Assemble,
+            "send-back" => Command::SendBack,
             "completions" => Command::Completions,
             "man" => Command::Man,
             _ => return None,
@@ -176,9 +181,9 @@ contract! {
         key: "json",
         ty: Type::Bool,
         default: Some(false),
-        subcommands: &[Command::Status, Command::Assemble],
+        subcommands: &[Command::Status, Command::Assemble, Command::SendBack],
         arg: Some(Arg::long("json")),
-        summary: "Print the report as JSON (status: the findings; assemble: the recipe and the outcome).",
+        summary: "Print the report as JSON (status: the findings; assemble: the recipe and the outcome; send-back: the series).",
         ..Input::EMPTY
     };
 
@@ -204,7 +209,7 @@ contract! {
     REPO: String, Command = Input {
         key: "repo",
         ty: Type::String,
-        subcommands: &[Command::Assemble],
+        subcommands: &[Command::Assemble, Command::SendBack],
         env: Some(Env::new("RHIZOID_REPO")),
         arg: Some(Arg { value_name: "DIR", ..Arg::long("repo") }),
         summary: "The clone the branches are in (the current folder when none is given).",
@@ -235,6 +240,61 @@ contract! {
         subcommands: &[Command::Assemble],
         arg: Some(Arg { value_name: "COMMIT", ..Arg::long("reproduces") }),
         summary: "A commit whose tree the tag's tree must equal; the paths that differ are listed.",
+        ..Input::EMPTY
+    };
+
+    BRANCH: String, Command = Input {
+        key: "branch",
+        ty: Type::String,
+        subcommands: &[Command::SendBack],
+        arg: Some(Arg { value_name: "BRANCH", ..Arg::positional(0) }),
+        summary: "The branch to send back as a series.",
+        ..Input::EMPTY
+    };
+
+    ONTO: String, Command = Input {
+        key: "onto",
+        ty: Type::String,
+        subcommands: &[Command::SendBack],
+        arg: Some(Arg { value_name: "REF", ..Arg::long("onto") }),
+        summary: "The target to rebase onto: the upstream tree's ref the series is for (a maintainer's for-next).",
+        ..Input::EMPTY
+    };
+
+    OUT: String, Command = Input {
+        key: "out",
+        ty: Type::String,
+        subcommands: &[Command::SendBack],
+        arg: Some(Arg { value_name: "DIR", ..Arg::long("out") }),
+        summary: "The folder the series goes in: new or empty (printed as file=).",
+        ..Input::EMPTY
+    };
+
+    CONFIG: String, Command = Input {
+        key: "config",
+        ty: Type::String,
+        subcommands: &[Command::SendBack],
+        env: Some(Env::new("RHIZOID_CONFIG")),
+        arg: Some(Arg { value_name: "FILE", ..Arg::long("config") }),
+        summary: "rhizoid's config: its [send] section names the send branch and version tag, and the check and recipient commands (none: no checks).",
+        ..Input::EMPTY
+    };
+
+    TESTED: String, Command = Input {
+        key: "tested",
+        ty: Type::String,
+        subcommands: &[Command::SendBack],
+        arg: Some(Arg { value_name: "SHA", ..Arg::long("tested") }),
+        summary: "The commit the series was tested on: a commit's sha, never a name that moves.",
+        ..Input::EMPTY
+    };
+
+    FORK: String, Command = Input {
+        key: "fork",
+        ty: Type::String,
+        subcommands: &[Command::SendBack],
+        arg: Some(Arg { value_name: "ID", ..Arg::long("fork") }),
+        summary: "The fork's id among the caller's upstreams: printed as carried-in=ID/BRANCH.",
         ..Input::EMPTY
     };
 

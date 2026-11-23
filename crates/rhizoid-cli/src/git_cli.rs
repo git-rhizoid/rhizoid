@@ -3,7 +3,9 @@
 //! person's git sees. Git runs with `LC_ALL=C` and never prompts.
 
 use rhizoid_core::assemble::LOCK_REASON_PREFIX;
-use rhizoid_core::{BranchSource, GitPort, MergeResult, PortError, Worktree};
+use rhizoid_core::{
+    BranchSource, CommandPort, FormatPatch, GitPort, MergeResult, PortError, RebaseResult, Worktree,
+};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -167,8 +169,77 @@ impl GitPort for GitCli {
     }
 
     fn tag(&self, name: &str, commit: &str, message: &str) -> Result<String, PortError> {
-        self.ok(&["tag", "-a", "-m", message, name, commit])?;
+        // rhizoid never signs: a person's tag.gpgSign is theirs to use on their own tags
+        self.ok(&["-c", "tag.gpgSign=false", "tag", "-a", "-m", message, name, commit])?;
         Ok(self.ok(&["rev-parse", &format!("refs/tags/{name}")])?.trim().to_string())
+    }
+
+    fn add_branch_worktree(
+        &self,
+        path: &Path,
+        branch: &str,
+        commit: &str,
+    ) -> Result<(), PortError> {
+        self.ok(&["worktree", "add", "-q", "-b", branch, path_arg(path)?, commit]).map(drop)
+    }
+
+    fn delete_branch(&self, name: &str) -> Result<(), PortError> {
+        self.ok(&["branch", "-q", "-D", name]).map(drop)
+    }
+
+    fn rebase(&self, path: &Path, onto: &str) -> Result<RebaseResult, PortError> {
+        // authorship kept, nothing signed or signed off, no remembered resolution replayed into a series
+        let args = [
+            "-c",
+            "commit.gpgSign=false",
+            "-c",
+            "rerere.enabled=false",
+            "-c",
+            "rebase.autoSquash=false",
+            "rebase",
+            "-q",
+            "--no-autosquash",
+            onto,
+        ];
+        let out = self.run(path, &args)?;
+        if out.status.success() {
+            return Ok(RebaseResult::Done);
+        }
+        let Some(commit) = self.verify(path, "REBASE_HEAD")? else {
+            return Err(PortError(format!(
+                "git rebase {onto} failed before replaying, in the worktree {}: {}",
+                path.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        };
+        let subject = self.ok_in(path, &["log", "-1", "--format=%s", &commit])?.trim().to_string();
+        let paths =
+            nul_separated(&self.ok_in(path, &["diff", "-z", "--name-only", "--diff-filter=U"])?);
+        Ok(RebaseResult::Conflict { commit, subject, paths })
+    }
+
+    fn format_patch(&self, path: &Path, p: &FormatPatch) -> Result<Vec<String>, PortError> {
+        let version = format!("-v{}", p.version);
+        let base = format!("--base={}", p.base);
+        let out = path_arg(&p.out)?.to_string();
+        let mut args = vec![
+            "-c",
+            "format.signOff=false",
+            "-c",
+            "format.coverLetter=false",
+            "format-patch",
+            "--cover-letter",
+            &version,
+            &base,
+            "-o",
+            &out,
+        ];
+        let range_diff = p.range_diff.as_ref().map(|r| format!("--range-diff={r}"));
+        if let Some(r) = &range_diff {
+            args.push(r);
+        }
+        args.push(&p.range);
+        self.ok_in(path, &args).map(|s| lines(&s))
     }
 
     fn tree_diff(&self, a: &str, b: &str) -> Result<Vec<String>, PortError> {
@@ -264,4 +335,25 @@ pub fn worktrees(clone: &Path) -> Result<Vec<Worktree>, String> {
             .map(|s| s.is_empty());
     }
     Ok(out)
+}
+
+/// The real [`CommandPort`]: the program run as given, never through a shell.
+pub struct Programs;
+
+impl CommandPort for Programs {
+    fn run(&self, argv: &[String], dir: &Path) -> Result<(Option<i32>, String, String), PortError> {
+        let (program, args) =
+            argv.split_first().ok_or_else(|| PortError("an empty command".to_string()))?;
+        let out = Command::new(program)
+            .args(args)
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| PortError(format!("cannot run {program}: {e}")))?;
+        Ok((
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ))
+    }
 }
