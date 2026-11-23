@@ -9,7 +9,7 @@
 //!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
 //!   rhizoid assemble --done TAG [--repo DIR] [--force]  end a tag's worktree
 //!   rhizoid send-back BRANCH --onto REF --out DIR [--config FILE] [--tested SHA] [--fork ID] [--repo DIR] [--json]
-//!   rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--fetch] [--push] [--pr] [--json]   every pin in one place; now bumps
+//!   rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--fetch] [--push] [--pr] [--land] [--json]   every pin in one place; now bumps
 //!   rhizoid follow --source DIR BASE VERSION    lay a release of a source into a base, as idealkb's follow.sh does
 //!   rhizoid completions SHELL | man | --version | --help
 //! ```
@@ -327,6 +327,16 @@ contract! {
         subcommands: &[Command::Bump],
         arg: Some(Arg::long("pr")),
         summary: "Push each bump's branch and open its pull request (gh pr create --fill).",
+        ..Input::EMPTY
+    };
+
+    LAND: bool, Command = Input {
+        key: "land",
+        ty: Type::Bool,
+        default: Some(false),
+        subcommands: &[Command::Bump],
+        arg: Some(Arg::long("land")),
+        summary: "Push, open the pull request and land each bump through the follower's checks: the graph's [bump] land argv.",
         ..Input::EMPTY
     };
 

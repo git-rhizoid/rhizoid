@@ -1,0 +1,16 @@
+# Move every pin whose edge names rhizoid-bump as its mover to its source's newest release, landed only through
+# the follower's own checks (rhizoid bump now --land: the graph's [bump] land command); a failing gate or check
+# leaves the pull request open and the run names it. Pins another job moves are listed and left.
+# The graph is read from origin/main of the clone RHIZOID_GRAPH_CLONE names (an absolute path, in
+# ~/.config/rhizoid/bump.env, with RHIZOID_GRAPH_FILE when it is not rhizoid.graph.toml), copied to the runtime
+# folder: a shared clone's checkout is never changed. The token is read at run time from the lab's private file,
+# never written here.
+[Unit]
+Description=Move each pin rhizoid-bump moves to its source's newest release, landed through the follower's checks
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=LAND_RELEASE=0
+EnvironmentFile=%h/.config/rhizoid/bump.env
+RuntimeDirectory=rhizoid-bump
+ExecStart=/bin/sh -c 'export GH_TOKEN="$$(cat %h/.config/ideal-agent/token)"; clone="$${RHIZOID_GRAPH_CLONE:?set RHIZOID_GRAPH_CLONE, an absolute path, in ~/.config/rhizoid/bump.env}"; git -C "$$clone" fetch -q origin && git -C "$$clone" show "origin/main:$${RHIZOID_GRAPH_FILE:-rhizoid.graph.toml}" > "$$RUNTIME_DIRECTORY/graph.toml" && exec rhizoid bump now --fetch --land --graph "$$RUNTIME_DIRECTORY/graph.toml"'

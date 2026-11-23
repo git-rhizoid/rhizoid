@@ -141,6 +141,19 @@ pub struct Graph {
     /// Repositories whose branches are assembled into tags: their names, topics, and what assemble made.
     #[serde(default, rename = "integration")]
     pub integrations: Vec<crate::integration::Integration>,
+    /// How `bump now` finishes what it moved.
+    #[serde(default)]
+    pub bump: BumpSettings,
+}
+
+/// The graph's `[bump]` table.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BumpSettings {
+    /// The command that lands a pushed bump branch through the follower's checks (argv, run in the bump's worktree on
+    /// its branch, once its pull request is open), for `bump now --land`: `["land"]`.
+    #[serde(default)]
+    pub land: Option<Vec<String>>,
 }
 
 impl Graph {
@@ -174,6 +187,9 @@ impl Graph {
                     "{edge}: moved_by names the one job that moves its pins, not nothing"
                 ));
             }
+        }
+        if graph.bump.land.as_ref().is_some_and(|l| l.is_empty()) {
+            return Err("[bump] land is a command: argv, not empty".to_string());
         }
         Ok(graph)
     }

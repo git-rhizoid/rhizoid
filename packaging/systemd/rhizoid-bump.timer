@@ -1,0 +1,8 @@
+[Unit]
+Description=Move each pin rhizoid-bump moves to its source's newest release, every hour, so a release reaches every follower within the hour
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+[Install]
+WantedBy=timers.target

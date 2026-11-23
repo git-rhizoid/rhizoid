@@ -214,6 +214,7 @@ fn request(r: &Resolution) -> Result<Request, String> {
             now: Contract::ACTION.get_from(r).as_deref() == Some("now"),
             push: Contract::PUSH.get_from(r).unwrap_or(false),
             pr: Contract::PR.get_from(r).unwrap_or(false),
+            land: Contract::LAND.get_from(r).unwrap_or(false),
             only: Contract::ONLY.get_from(r).filter(|s| !s.is_empty()),
             fetch: Contract::FETCH.get_from(r).unwrap_or(false),
             json: Contract::JSON.get_from(r).unwrap_or(false),
