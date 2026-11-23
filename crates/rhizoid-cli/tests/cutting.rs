@@ -523,3 +523,38 @@ fn update_tags_the_patch_tip_release_cut_n_only_when_it_moved() {
         "a new release: its first cut"
     );
 }
+
+#[test]
+fn a_rolling_upstream_tag_or_a_release_candidate_never_stops_a_cut() {
+    let w = world(None);
+    let work = w.root.join("upwork");
+    assert!(Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&w.upstream)
+        .arg(&work)
+        .status()
+        .unwrap()
+        .success());
+    git(&work, &["tag", "-a", "-m", "v1.0", "v1.0"]);
+    git(&work, &["tag", "vnightly"]);
+    git(&work, &["push", "-q", "origin", "v1.0", "vnightly"]);
+    git(&w.clone, &["fetch", "-q", "--tags", w.upstream.to_str().unwrap()]);
+    w.graph(&format!(
+        "[[fork]]\nfork = \"acme/fork\"\nupstream = \"{}\"\ncut_tags = \"v\"\n",
+        w.upstream.display()
+    ));
+    assert_eq!(w.rhizoid(&["import", "acme/fork", "now"]).status.code(), Some(0));
+    std::fs::write(work.join("NEW"), "rc\n").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "rc"]);
+    git(&work, &["tag", "-a", "-m", "rc", "v1.1-rc1"]);
+    git(&work, &["tag", "-f", "vnightly"]);
+    git(&work, &["push", "-q", "-f", "origin", "master", "v1.1-rc1", "vnightly"]);
+    let out = w.rhizoid(&["update", "acme/fork", "now"]);
+    assert_eq!(out.status.code(), Some(0), "the moved vnightly stops nothing: {out:?}");
+    assert_eq!(
+        git(&w.fork, &["tag", "-l", "*-cut.*"]),
+        "v1.0-cut.1",
+        "the rc is no release to cut"
+    );
+}

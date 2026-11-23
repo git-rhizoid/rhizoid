@@ -263,26 +263,28 @@ impl GitPort for GitCli {
         self.ok(&["push", "-q", remote, &format!("{commit}:refs/heads/{branch}")]).map(drop)
     }
 
-    fn fetch_tags(&self, remote: &str) -> Result<(), PortError> {
-        self.ok(&["fetch", "-q", "--tags", remote]).map(drop)
+    fn fetch_into(&self, remote: &str, refspec: &str) -> Result<(), PortError> {
+        if remote.starts_with('-') {
+            return Err(PortError(format!("{remote}: not a remote")));
+        }
+        self.ok(&["fetch", "-q", "--no-tags", remote, refspec]).map(drop)
     }
 
-    fn nearest_release_tag(&self, rev: &str, prefix: &str) -> Result<Option<String>, PortError> {
-        let pattern = format!("{prefix}[0-9]*");
-        let out = self.run(
-            &self.repo,
-            &[
-                "describe",
-                "--tags",
-                "--abbrev=0",
-                "--match",
-                &pattern,
-                "--exclude",
-                "*-cut.[0-9]*",
-                rev,
-            ],
-        )?;
-        Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+    fn refs_under(&self, namespace: &str) -> Result<Vec<(String, String)>, PortError> {
+        let out = self.ok(&[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)%00%(*objectname)",
+            namespace,
+        ])?;
+        Ok(out
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split('\0');
+                let (name, object, peeled) = (f.next()?, f.next()?, f.next().unwrap_or(""));
+                let commit = if peeled.is_empty() { object } else { peeled };
+                Some((name.strip_prefix(namespace)?.to_string(), commit.to_string()))
+            })
+            .collect())
     }
 
     fn push_tag(&self, remote: &str, name: &str) -> Result<(), PortError> {

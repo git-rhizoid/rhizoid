@@ -12,6 +12,9 @@ use crate::ports::{CommandPort, GitHubPort, GitPort, MergeOutcome, MergeResult, 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+/// The suffix of a cutting's release tags: RELEASE-cut.N, the only form rhizoid makes and reads.
+pub const CUT_SUFFIX: &str = "-cut.N";
+
 /// The patch branch of a cutting that names none.
 pub const PATCH_BRANCH: &str = "rhizoid/patch";
 
@@ -697,17 +700,25 @@ pub fn carry_out(
                 }
             }
             Step::CutTag { branch, prefix, remote, upstream } => {
-                // the releases are the upstream's tags, the cuts the fork's
-                git.fetch_tags(upstream)?;
-                git.fetch_tags(remote)?;
+                // the upstream's releases and the fork's cuts, each into a namespace of rhizoid's own: the clone's
+                // tags are never written, and a tag that moved upstream cannot stop an update
+                let releases_ns = "refs/rhizoid/releases/";
+                let cuts_ns = format!("refs/rhizoid/cuts/{}/", remote.replace('/', "-"));
+                git.fetch_into(upstream, &format!("+refs/tags/{prefix}*:{releases_ns}{prefix}*"))?;
+                git.fetch_into(remote, &format!("+refs/tags/{prefix}*:{cuts_ns}{prefix}*"))?;
                 let tip = git.fetch_ref(remote, branch)?;
-                let cuts: Vec<String> =
-                    git.tags(prefix)?.into_iter().filter(|t| t.contains("-cut.")).collect();
-                let newest = crate::text::latest_cut(&cuts, prefix, "-cut.N");
-                let newest_at = match &newest {
-                    Some(v) => git.commit(&format!("refs/tags/{prefix}{v}"))?,
-                    None => None,
-                };
+                let cuts: Vec<(String, String)> = git
+                    .refs_under(&cuts_ns)?
+                    .into_iter()
+                    .filter(|(t, _)| t.starts_with(prefix.as_str()) && t.contains("-cut."))
+                    .collect();
+                let names: Vec<String> = cuts.iter().map(|(t, _)| t.clone()).collect();
+                let newest = crate::text::latest_cut(&names, prefix, CUT_SUFFIX);
+                let newest_at = newest.as_ref().and_then(|v| {
+                    cuts.iter()
+                        .find(|(t, _)| *t == format!("{prefix}{v}"))
+                        .map(|(_, sha)| sha.clone())
+                });
                 if newest_at.as_deref() == Some(tip.as_str()) {
                     done.push(format!(
                         "no cut tag: {branch} is {prefix}{} already",
@@ -715,26 +726,42 @@ pub fn carry_out(
                     ));
                     continue;
                 }
-                let release = git.nearest_release_tag(&tip, prefix)?.ok_or_else(|| {
-                    PortError(format!(
-                        "no {prefix}RELEASE tag under {branch}: nothing to name a cut after"
-                    ))
+                // the newest numeric release that is under the tip (a release candidate is no release to cut)
+                let mut releases: Vec<(Vec<u64>, String, String)> = git
+                    .refs_under(releases_ns)?
+                    .into_iter()
+                    .filter_map(|(t, sha)| {
+                        let v = t.strip_prefix(prefix.as_str())?;
+                        let (numbers, n) = crate::text::cut_order(v, CUT_SUFFIX)?;
+                        (n == 0 && !v.contains("-cut.")).then(|| (numbers, v.to_string(), sha))
+                    })
+                    .collect();
+                releases.sort_by(|a, b| b.0.cmp(&a.0));
+                let mut release = None;
+                for (_, v, sha) in &releases {
+                    if git.is_ancestor(sha, &tip)? {
+                        release = Some(v.clone());
+                        break;
+                    }
+                }
+                let version = release.ok_or_else(|| {
+                    PortError(format!("no {prefix}RELEASE (numbers only) under {branch}: nothing to name a cut after"))
                 })?;
-                let version = release.strip_prefix(prefix.as_str()).unwrap_or(&release).to_string();
-                let n = cuts
+                let n = names
                     .iter()
                     .filter_map(|t| t.strip_prefix(prefix.as_str()))
-                    .filter_map(|v| crate::text::cut_order(v, "-cut.N").map(|(_, n)| (v, n)))
-                    .filter(|(v, _)| {
-                        v.split_once("-cut.").map(|(r, _)| r) == Some(version.as_str())
-                    })
-                    .map(|(_, n)| n)
+                    .filter(|v| v.split_once("-cut.").map(|(r, _)| r) == Some(version.as_str()))
+                    .filter_map(|v| crate::text::cut_order(v, CUT_SUFFIX).map(|(_, n)| n))
                     .max()
                     .unwrap_or(0)
                     + 1;
-                let name = format!("{release}-cut.{n}");
-                git.tag(&name, &tip, &format!("rhizoid cut: {branch} on {release}"))?;
-                git.push_tag(remote, &name)?;
+                let name = format!("{prefix}{version}-cut.{n}");
+                git.tag(&name, &tip, &format!("rhizoid cut: {branch} on {prefix}{version}"))?;
+                if let Err(e) = git.push_tag(remote, &name) {
+                    // a tag the fork does not have is not kept: the next run makes it again
+                    let _ = git.delete_tag(&name);
+                    return Err(e);
+                }
                 done.push(format!("tagged {name} and pushed it"));
             }
             Step::Record { record } => {
