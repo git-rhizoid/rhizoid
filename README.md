@@ -242,7 +242,7 @@ back before it is committed (a value that appears twice, or does not read back, 
 tool's `gate`, when it has one, passed before the commit (`gated-out` commits nothing); `--push` pushes the branch to
 the follower's `origin`, `--pr` also opens its pull request (`gh pr create --fill`). A branch already there is
 `branch-exists`. Slices are moved by `follow`, which lays their files: `bump` lists them, `moved_by=follow`. The
-follower's own checkout is never touched, and the worktree always goes. The commit is the pin alone: a gate that changes any other
+follower's own checkout is never touched, and the worktree always goes. The commit is the pin and the files the tool names in `also`: a gate that changes any other
 file is refused (`refused`, with why), and a bump commit is never signed. `--fetch` fetches each clone first, and a
 branch already on `origin` counts as `branch-exists`. When the pull request command fails after the push, the branch
 stays, pushed, and `pin.N.pr_error` says why. `--push` and `--pr` go only with `now`. A `gate` is argv from the graph
@@ -259,7 +259,9 @@ tag_prefix = "lpoco-attended-v"
 pin = "procedures/steps/Cargo.toml"
 key = "dependencies.lpoco-attended.tag"
 value = "lpoco-attended-v{version}"           # a Cargo git dependency's tag
-gate = ["lpoco-attended", "check"]           # argv, run in the bumped worktree; any exit but 0 commits nothing
+gate = ["cargo", "check", "--manifest-path", "procedures/steps/Cargo.toml"]   # argv, in the bumped worktree;
+                                             #   any exit but 0 commits nothing
+also = ["procedures/steps/Cargo.lock"]       # what the gate may change: committed with the pin
 followers = ["linux-phone-oco/google-walleye-lab"]
 ```
 

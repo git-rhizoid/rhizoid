@@ -220,10 +220,12 @@ impl GitPort for GitCli {
         self.ok(&["tag", "-d", name]).map(drop)
     }
 
-    fn commit_all(&self, path: &Path, message: &str) -> Result<(), PortError> {
+    fn commit_files(&self, path: &Path, files: &[String], message: &str) -> Result<(), PortError> {
+        let mut add = vec!["add", "-A", "--"];
+        add.extend(files.iter().map(String::as_str));
+        self.ok_in(path, &add)?;
         // never signed: a bump is a branch for review, and a signing prompt would stop it
-        self.ok_in(path, &["-c", "commit.gpgSign=false", "commit", "-q", "-a", "-m", message])
-            .map(drop)
+        self.ok_in(path, &["-c", "commit.gpgSign=false", "commit", "-q", "-m", message]).map(drop)
     }
 
     fn changed_files(&self, path: &Path) -> Result<Vec<String>, PortError> {

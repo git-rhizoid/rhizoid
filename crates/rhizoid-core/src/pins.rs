@@ -348,15 +348,27 @@ fn edit_gate_commit(
             return Ok(Bumped::GatedOut { exit, output: format!("{stdout}{stderr}") });
         }
     }
-    // the commit is the pin alone: a gate that changed anything else is refused, not swept in
-    let others: Vec<String> =
-        git.changed_files(worktree)?.into_iter().filter(|f| *f != pin.file).collect();
+    // the commit is the pin and what the tool names in `also`: a gate that changed anything else is refused
+    let others: Vec<String> = git
+        .changed_files(worktree)?
+        .into_iter()
+        .filter(|f| *f != pin.file && !tool.also.contains(f))
+        .collect();
     if !others.is_empty() {
         return Ok(Bumped::Refused {
-            why: format!("the bump changed more than the pin: {}", others.join(", ")),
+            why: format!(
+                "the bump changed more than the pin and its `also`: {}",
+                others.join(", ")
+            ),
         });
     }
-    git.commit_all(worktree, &format!("chore(deps): {} {old} -> {}", tool.name, pin.latest))?;
+    let mut files = vec![pin.file.clone()];
+    files.extend(tool.also.iter().filter(|f| worktree.join(f).exists()).cloned());
+    git.commit_files(
+        worktree,
+        &files,
+        &format!("chore(deps): {} {old} -> {}", tool.name, pin.latest),
+    )?;
     let pushed = at.push || at.pr.is_some();
     let mut bumped =
         Bumped::Bumped { branch: branch.to_string(), pushed: false, pr: None, pr_error: None };
