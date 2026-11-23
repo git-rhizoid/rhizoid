@@ -2,6 +2,7 @@
 //! `2026-11-23-standard-tools-drive-cut-or-write`) - its worktrees and its rerere memory are the ones a
 //! person's git sees. Git runs with `LC_ALL=C` and never prompts.
 
+use crate::git_repos::failure;
 use rhizoid_core::assemble::LOCK_REASON_PREFIX;
 use rhizoid_core::{
     BranchSource, CommandPort, FormatPatch, GitPort, MergeResult, PortError, RebaseResult, Worktree,
@@ -36,11 +37,7 @@ impl GitCli {
     fn ok_in(&self, dir: &Path, args: &[&str]) -> Result<String, PortError> {
         let out = self.run(dir, args)?;
         if !out.status.success() {
-            return Err(PortError(format!(
-                "git {}: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            )));
+            return Err(PortError(failure(args, &out)));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -66,7 +63,7 @@ fn path_arg(p: &Path) -> Result<&str, PortError> {
 
 impl GitPort for GitCli {
     fn fetch_prune(&self) -> Result<(), PortError> {
-        self.ok(&["fetch", "-q", "--all", "--prune", "--no-prune-tags"]).map(drop)
+        self.ok(&["fetch", "--all", "--prune", "--no-prune-tags"]).map(drop)
     }
 
     fn commit(&self, rev: &str) -> Result<Option<String>, PortError> {
@@ -134,10 +131,10 @@ impl GitPort for GitCli {
                 MergeResult::Merged { by_rerere: false }
             });
         }
-        let why = String::from_utf8_lossy(&merged.stderr).trim().to_string();
+        let why = failure(&args, &merged);
         if self.verify(path, "MERGE_HEAD")?.is_none() {
             return Err(PortError(format!(
-                "git merge {commit} failed before merging, in the worktree {}: {why}",
+                "merging {commit} failed before merging, in the worktree {}: {why}",
                 path.display()
             )));
         }
@@ -148,7 +145,7 @@ impl GitPort for GitCli {
         }
         if !why.contains("using previous resolution") {
             return Err(PortError(format!(
-                "git merge {commit} stopped with nothing in conflict, in the worktree {}: {why}",
+                "merging {commit} stopped with nothing in conflict, in the worktree {}: {why}",
                 path.display()
             )));
         }
@@ -193,10 +190,7 @@ impl GitPort for GitCli {
         match out.status.code() {
             Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string())),
             Some(1) => Ok(None),
-            _ => Err(PortError(format!(
-                "git merge-base {a} {b}: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))),
+            _ => Err(PortError(failure(&["merge-base", a, b], &out))),
         }
     }
 
@@ -255,7 +249,7 @@ impl GitPort for GitCli {
         if remote.starts_with('-') {
             return Err(PortError(format!("{remote}: not a remote")));
         }
-        self.ok(&["fetch", "-q", "--no-tags", remote, &format!("refs/heads/{branch}")])?;
+        self.ok(&["fetch", "--no-tags", remote, &format!("refs/heads/{branch}")])?;
         Ok(self.ok(&["rev-parse", "FETCH_HEAD"])?.trim().to_string())
     }
 
@@ -267,7 +261,7 @@ impl GitPort for GitCli {
         if remote.starts_with('-') {
             return Err(PortError(format!("{remote}: not a remote")));
         }
-        self.ok(&["fetch", "-q", "--no-tags", remote, refspec]).map(drop)
+        self.ok(&["fetch", "--no-tags", remote, refspec]).map(drop)
     }
 
     fn refs_under(&self, namespace: &str) -> Result<Vec<(String, String)>, PortError> {
@@ -309,10 +303,7 @@ impl GitPort for GitCli {
         match out.status.code() {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
-            _ => Err(PortError(format!(
-                "git merge-base --is-ancestor {a} {b}: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))),
+            _ => Err(PortError(failure(&["merge-base", "--is-ancestor", a, b], &out))),
         }
     }
 
@@ -342,9 +333,9 @@ impl GitPort for GitCli {
         }
         let Some(commit) = self.verify(path, "REBASE_HEAD")? else {
             return Err(PortError(format!(
-                "git rebase {onto} failed before replaying, in the worktree {}: {}",
+                "rebasing onto {onto} failed before replaying, in the worktree {}: {}",
                 path.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
+                failure(&args, &out)
             )));
         };
         let subject = self.ok_in(path, &["log", "-1", "--format=%s", &commit])?.trim().to_string();
@@ -423,11 +414,7 @@ fn git_in(dir: &Path, args: &[&str]) -> Result<String, String> {
         .output()
         .map_err(|e| format!("cannot run git: {e}"))?;
     if !out.status.success() {
-        return Err(format!(
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        return Err(failure(args, &out));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

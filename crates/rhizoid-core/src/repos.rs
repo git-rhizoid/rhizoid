@@ -64,4 +64,10 @@ pub trait Repos {
 
     /// How `fork_head` stands against `upstream_head`, two heads that are not the same.
     fn level(&self, fork: &Remote, fork_head: &str, upstream_head: &str) -> Level;
+
+    /// What reading found about the clones themselves, beside the edges: a tag `origin` moved that the clone
+    /// holds as it was (`moved-by-hand`, `tag-origin`). Ask it after the reads; none by default.
+    fn fetch_findings(&self) -> Vec<crate::Finding> {
+        Vec::new()
+    }
 }

@@ -28,7 +28,7 @@ read. `tests/agree-with-graph-drift.sh` runs it against the shell it replaces, `
 
 It reads the clones as they are, and asks remotes only for their refs (`git ls-remote`: no objects - a fork's
 upstream, an integration's `origin` and `releases`) (`--fetch` first fetches each clone's branches from `origin`, pruning the ones `origin`
-no longer has, then its tags without pruning, so a tag made locally stays), and pin files as TOML, not as lines. Where it answers differently from the shell on purpose: a file named in `own` that neither side has is
+no longer has, then its tags without pruning and never forced, so a tag made locally stays, and a tag `origin` moved that the clone holds as it was is kept and becomes a `tag-origin` finding while the rest of the fetch and the report go on; `--fetch` needs git 2.41 or newer, for `fetch --porcelain`), and pin files as TOML, not as lines. Where it answers differently from the shell on purpose: a file named in `own` that neither side has is
 `behind` (a typo), a pin that names a release its source never made is `behind`, a fork ahead of its upstream is
 `moved-by-hand` and not behind, a pin file that is not what it should be stops the report. A cutting is a `[[fork]]` edge
 of the graph (see the cutting verbs below); rhizoid.toml, its manifest and `init` are gone (decision
@@ -56,6 +56,7 @@ example. Each check runs only when the edge gives what it needs:
 | `name-scheme` | `scheme` | every local branch and tag fits it | `moved-by-hand`: one finding for the branches outside it and one for the tags, the first ten named and the rest counted |
 | `topic-base` | `topics`, and `releases` for the newest | a topic is on the newest release of `releases` (a stable point release counts, a release candidate does not), or on the BASE its name says | `behind` (the release it is on; the newest may not be in the clone yet), `moved-by-hand` (off its BASE); `not-known-yet` when no `releases` is named |
 | `branch-origin` | `topics` | every local topic branch is `origin`'s, asked of `origin` itself (`git ls-remote`), so a clone that tracks only some branches still gets an answer | `behind`: assemble would take the stale local one (or `origin`'s commit is not fetched yet); `moved-by-hand`: commits `origin` lacks, diverged, or a topic only in this clone; `not-known-yet` when `origin` cannot be asked |
+| `tag-origin` | `--fetch` | every tag the clone holds is `origin`'s, where `origin` has it: git refuses to clobber a tag `origin` moved, and rhizoid never forces it - local tags are kept on purpose (assembled `int/` tags are made here) | `moved-by-hand`: the tag, its object here and `origin`'s; nothing changes, move one of them on purpose |
 | `recipe` | - | the newest tag of each assembled list and base: its recipe, read back from its message, names every branch where it is now | `behind`: a branch moved or is gone, so assemble again; `moved-by-hand`: a tag of the `assembled` shape with no recipe (made by hand) |
 | `worktree-tag` | - | each worktree assemble locked has its tag's tree and no change | `moved-by-hand`: a different tree, a change, or a tag that was never made; `behind`: an unlocked worktree in a `rhizoid` home, left at a conflict |
 
@@ -247,8 +248,8 @@ with it), the slice's `gate` passed, and every file follow laid committed; a fol
 (follow's 3) is `refused` - left for a hand, as update-pins leaves it; so is a release whose list names a path
 outside the follower, one whose pin file is not the graph's, and a gate that changed more than follow laid. The
 follower's own checkout is never touched, and the worktree always goes. The commit is the pin and the files the tool names in `also`: a gate that changes any other
-file is refused (`refused`, with why), and a bump commit is never signed. `--fetch` fetches each clone first, and a
-branch already on `origin` counts as `branch-exists`. When the pull request command fails after the push, the branch
+file is refused (`refused`, with why), and a bump commit is never signed. `--fetch` fetches each clone first, as status does - a tag `origin` moved is kept and said as a `finding.N` line after the pins (on stderr with `--json`, whose stdout stays the pins; the exit still says only how the pins stand) - and a
+branch already on `origin` counts as `branch-exists`. Every failed git call names the command and what git said, never an empty error. When the pull request command fails after the push, the branch
 stays, pushed, and `pin.N.pr_error` says why. `--push` and `--pr` go only with `now`. A `gate` is argv from the graph
 file, run with `now`: run `bump now` only on a graph you trust.
 

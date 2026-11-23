@@ -59,6 +59,8 @@ pub enum Check {
     TopicBase,
     /// A local topic branch against `origin`'s of the same name.
     BranchOrigin,
+    /// A tag the clone holds against `origin`'s of the same name, which moved.
+    TagOrigin,
     /// An assembled tag's recipe, read back from its message, against the branches now.
     Recipe,
     /// An assembled worktree against its tag.
@@ -82,6 +84,7 @@ impl Check {
             Check::NameScheme => "name-scheme",
             Check::TopicBase => "topic-base",
             Check::BranchOrigin => "branch-origin",
+            Check::TagOrigin => "tag-origin",
             Check::Recipe => "recipe",
             Check::WorktreeTag => "worktree-tag",
         }
