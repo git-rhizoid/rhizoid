@@ -199,6 +199,62 @@ impl IntegrationReads for GitRepos<'_> {
             .collect())
     }
 
+    fn ls_remote(
+        &self,
+        repo: &RepoName,
+        remote: &str,
+        namespace: &str,
+    ) -> Result<Result<Vec<(String, String)>, String>, RepoError> {
+        if remote.starts_with('-') {
+            return Ok(Err(format!("{remote} starts with a dash")));
+        }
+        // one ask: a tag's peeled line (NAME^{}) overwrites its own, so each name carries its commit
+        let mut ask = Command::new("git");
+        ask.arg("-C").arg(self.clone_dir(repo)?).args([
+            "ls-remote",
+            remote,
+            &format!("{namespace}*"),
+        ]);
+        // a remote that cannot answer is not known yet: never a prompt, never a wait without end
+        ask.env("GIT_ASKPASS", "true");
+        if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+            ask.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=10");
+        }
+        let out = plain(&mut ask)?;
+        if !out.status.success() {
+            let why = stderr(&out);
+            return Ok(Err(if why.is_empty() {
+                "git ls-remote failed, saying nothing".to_string()
+            } else {
+                why
+            }));
+        }
+        let mut refs: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let Some((sha, name)) = line.split_once('\t') else { continue };
+            let Some(name) = name.strip_prefix(namespace) else { continue };
+            match name.strip_suffix("^{}") {
+                Some(tag) => {
+                    refs.insert(tag.to_string(), sha.to_string());
+                }
+                None => {
+                    refs.entry(name.to_string()).or_insert_with(|| sha.to_string());
+                }
+            }
+        }
+        Ok(Ok(refs.into_iter().collect()))
+    }
+
+    fn is_shallow(&self, repo: &RepoName) -> Result<bool, RepoError> {
+        Ok(self.read(repo, &["rev-parse", "--is-shallow-repository"])?.trim() == "true")
+    }
+
+    fn has_commit(&self, repo: &RepoName, sha: &str) -> Result<bool, RepoError> {
+        let out = git(&self.clone_dir(repo)?, &["cat-file", "-e", &format!("{sha}^{{commit}}")])?;
+        Ok(out.status.success())
+    }
+
     fn tree_equal(&self, repo: &RepoName, a: &str, b: &str) -> Result<bool, RepoError> {
         let tree = |r: &str| self.read(repo, &["rev-parse", &format!("{r}^{{tree}}")]);
         Ok(tree(a)?.trim() == tree(b)?.trim())

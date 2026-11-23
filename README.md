@@ -25,7 +25,8 @@ repositories follow which source, and what a source's tags look like. Each follo
 read. `tests/agree-with-graph-drift.sh` runs it against the shell it replaces, `graph-drift.sh` of
 `linux-phone-oco/docs`, on the real graph and compares them edge by edge.
 
-It reads the clones as they are (`--fetch` first fetches each clone's branches from `origin`, pruning the ones `origin`
+It reads the clones as they are, and asks remotes only for their refs (`git ls-remote`: no objects - a fork's
+upstream, an integration's `origin` and `releases`) (`--fetch` first fetches each clone's branches from `origin`, pruning the ones `origin`
 no longer has, then its tags without pruning, so a tag made locally stays), and pin files as TOML, not as lines. Where it answers differently from the shell on purpose: a file named in `own` that neither side has is
 `behind` (a typo), a pin that names a release its source never made is `behind`, a fork ahead of its upstream is
 `moved-by-hand` and not behind, a pin file that is not what it should be stops the report. The old `status`, which
@@ -39,6 +40,7 @@ tags, against what the graph gives it - every name is the graph's, none is rhizo
 [[integration]]
 repo = "acme/app"
 release_prefix = "v"                     # release tags: this, then a digit (v1.4, v1.5-rc2); always in the scheme
+releases = "acme/upstream"               # where releases come from: its tags, read with git ls-remote (no objects)
 topics = ["feature/ITEM", "fix/ITEM/BASE"]   # the branches lists merge; BASE says what one is based on
 assembled = "candidate/LIST/N"           # the shape of the tags assemble makes here
 scheme = { branches = ["main", "feature/ITEM", "fix/ITEM/BASE"], tags = ["candidate/LIST/N"] }
@@ -51,8 +53,8 @@ example. Each check runs only when the edge gives what it needs:
 | check | needs | current | otherwise |
 |---|---|---|---|
 | `name-scheme` | `scheme` | every local branch and tag fits it | `moved-by-hand`: one finding for the branches outside it and one for the tags, the first ten named and the rest counted |
-| `topic-base` | `topics` | a topic is on the newest release (a stable point release counts, a release candidate does not), or on the BASE its name says | `behind` (the release it is on), `moved-by-hand` (off its BASE) |
-| `branch-origin` | `topics` | every local topic branch is `origin`'s | `behind`: assemble would take the stale local one; `moved-by-hand`: commits `origin` lacks, or diverged |
+| `topic-base` | `topics`, and `releases` for the newest | a topic is on the newest release of `releases` (a stable point release counts, a release candidate does not), or on the BASE its name says | `behind` (the release it is on; the newest may not be in the clone yet), `moved-by-hand` (off its BASE); `not-known-yet` when no `releases` is named |
+| `branch-origin` | `topics` | every local topic branch is `origin`'s, asked of `origin` itself (`git ls-remote`), so a clone that tracks only some branches still gets an answer | `behind`: assemble would take the stale local one (or `origin`'s commit is not fetched yet); `moved-by-hand`: commits `origin` lacks, diverged, or a topic only in this clone; `not-known-yet` when `origin` cannot be asked |
 | `recipe` | - | the newest tag of each assembled list and base: its recipe, read back from its message, names every branch where it is now | `behind`: a branch moved or is gone, so assemble again; `moved-by-hand`: a tag of the `assembled` shape with no recipe (made by hand) |
 | `worktree-tag` | - | each worktree assemble locked has its tag's tree and no change | `moved-by-hand`: a different tree, a change, or a tag that was never made; `behind`: an unlocked worktree in a `rhizoid` home, left at a conflict |
 
