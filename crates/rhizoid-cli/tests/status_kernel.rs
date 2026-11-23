@@ -40,7 +40,6 @@ fn commit(dir: &Path, file: &str, text: &str) {
 const GRAPH: &str = r#"
 [[kernel]]
 clone = "acme/linux"
-scheme = { branches = ["main", "topic/ITEM", "backport/ITEM/BASE", "int/DEVICE/LIST"], tags = ["int/DEVICE/LIST/BASE/N"] }
 "#;
 
 const LISTS: &str = r#"device = "dev"
@@ -66,7 +65,7 @@ struct World {
 }
 
 /// A kernel clone: releases v1.0 and v1.1, topic/a on v1.1, backport/b/v1.0 on v1.0, both assembled to
-/// int/dev/two/v1.1/1 with int/dev/two at it.
+/// int/dev/two/v1.1/1 (the default scheme: no int/ branch).
 fn world() -> World {
     let root = tempdir();
     let repo = root.join("acme/linux");
@@ -86,7 +85,6 @@ fn world() -> World {
     let w = World { root, repo, graph };
     let out = w.assemble();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    git(&w.repo, &["branch", "int/dev/two", "int/dev/two/v1.1/1^{commit}"]);
     w
 }
 
@@ -137,7 +135,7 @@ fn a_clone_as_assemble_left_it_is_current_on_every_check() {
     let w = world();
     let (code, f) = w.status();
     assert_eq!(code, Some(0), "{f:#?}");
-    assert_eq!(of(&f, "kernel-scheme"), ["current: 4 branches and 3 tags, all in the scheme"]);
+    assert_eq!(of(&f, "kernel-scheme"), ["current: 3 branches and 3 tags, all in the scheme"]);
     assert_eq!(
         of(&f, "topic-base"),
         [
@@ -145,13 +143,12 @@ fn a_clone_as_assemble_left_it_is_current_on_every_check() {
             "current: topic/a is on v1.1, the newest release",
         ]
     );
-    assert_eq!(of(&f, "int-by-hand"), ["current: int/dev/two is at int/dev/two/v1.1/1"]);
     assert_eq!(
         of(&f, "int-recipe"),
         ["current: 2 entries on v1.1; every branch is where the tag took it"]
     );
     let worktree = w.worktree().display().to_string();
-    assert_eq!(of(&f, "worktree-tag"), [format!("current: {worktree} is int/dev/two/v1.1/1")]);
+    assert_eq!(of(&f, "worktree-tag"), [format!("current: {worktree}: locked, at int/dev/two/v1.1/1 (rhizoid assemble --done int/dev/two/v1.1/1 ends it)")]);
 }
 
 #[test]
@@ -161,8 +158,7 @@ fn each_sign_of_work_outside_the_flow_is_named() {
     git(&w.repo, &["tag", "oops", "v1.0"]);
     git(&w.repo, &["checkout", "-q", "-b", "topic/old", "v1.0"]);
     commit(&w.repo, "old.txt", "old\n");
-    git(&w.repo, &["checkout", "-q", "int/dev/two"]);
-    commit(&w.repo, "hand.txt", "by hand\n");
+    git(&w.repo, &["branch", "int/dev/two", "main"]);
     git(&w.repo, &["checkout", "-q", "topic/a"]);
     commit(&w.repo, "a.txt", "a, moved on\n");
     git(&w.repo, &["checkout", "-q", "main"]);
@@ -173,8 +169,8 @@ fn each_sign_of_work_outside_the_flow_is_named() {
     assert_eq!(
         of(&f, "kernel-scheme"),
         [
-            "moved-by-hand: branch stray is outside the scheme",
-            "moved-by-hand: tag oops is outside the scheme",
+            "moved-by-hand: 2 branches outside the scheme: int/dev/two, stray",
+            "moved-by-hand: 1 tags outside the scheme: oops",
         ]
     );
     assert!(
@@ -183,17 +179,13 @@ fn each_sign_of_work_outside_the_flow_is_named() {
         "{f:#?}"
     );
     assert_eq!(
-        of(&f, "int-by-hand"),
-        ["moved-by-hand: int/dev/two has 1 commits not made by assemble, after int/dev/two/v1.1/1"]
-    );
-    assert_eq!(
         of(&f, "int-recipe"),
         ["behind: topic/a moved since it was assembled: assemble again"]
     );
     let worktree = w.worktree().display().to_string();
     assert_eq!(
         of(&f, "worktree-tag"),
-        [format!("moved-by-hand: {worktree}: changed beyond int/dev/two/v1.1/1")]
+        [format!("moved-by-hand: {worktree}: locked, changed beyond int/dev/two/v1.1/1")]
     );
 }
 
@@ -228,7 +220,7 @@ fn a_tag_under_int_not_made_by_assemble_is_named() {
 }
 
 #[test]
-fn a_worktree_whose_run_stopped_before_its_tag_is_named() {
+fn a_worktree_left_at_a_conflict_and_one_locked_for_no_tag_are_named() {
     let w = world();
     let wt = w.worktree();
     git(&w.repo, &["worktree", "unlock", wt.to_str().unwrap()]);
@@ -238,14 +230,51 @@ fn a_worktree_whose_run_stopped_before_its_tag_is_named() {
             "worktree",
             "lock",
             "--reason",
-            "rhizoid assemble int/dev/two/v1.1/9: wanted until unlocked",
+            "rhizoid assemble int/dev/two/v1.1/9: wanted",
             wt.to_str().unwrap(),
         ],
     );
+    let left = w.root.join("worktrees/linux/rhizoid/dev-two-v1.1-2");
+    git(&w.repo, &["worktree", "add", "-q", "--detach", left.to_str().unwrap(), "v1.1"]);
     let (_, f) = w.status();
-    let worktree = wt.display().to_string();
     assert_eq!(
         of(&f, "worktree-tag"),
-        [format!("moved-by-hand: {worktree}: int/dev/two/v1.1/9 was never made (the run stopped at a conflict?)")]
+        [
+            format!("moved-by-hand: {}: locked for int/dev/two/v1.1/9, which was never made", wt.display()),
+            format!("behind: {}: unlocked, left at a conflict - resolve and commit there, assemble again, then git worktree remove it", left.display()),
+        ]
+    );
+}
+
+#[test]
+fn a_local_topic_behind_origins_is_flagged_and_fetch_keeps_local_int_tags() {
+    let w = world();
+    let clone = w.root.join("acme/clone");
+    let ok = Command::new("git").args(["clone", "-q"]).arg(&w.repo).arg(&clone).status().unwrap();
+    assert!(ok.success());
+    git(&clone, &["branch", "-q", "topic/a", "origin/topic/a"]);
+    git(&clone, &["tag", "int/dev/two/v1.1/5", "v1.1"]);
+    git(&clone, &["config", "remote.origin.pruneTags", "true"]);
+    git(&w.repo, &["checkout", "-q", "topic/a"]);
+    commit(&w.repo, "a.txt", "a, moved on\n");
+    git(&w.repo, &["checkout", "-q", "main"]);
+    std::fs::write(&w.graph, "[[kernel]]\nclone = \"acme/clone\"\n").unwrap();
+
+    let out = Command::new(bin())
+        .args(["status", "--json", "--fetch", "--graph"])
+        .arg(&w.graph)
+        .arg("--root")
+        .arg(&w.root)
+        .output()
+        .unwrap();
+    let f: Vec<serde_json::Value> =
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {out:?}"));
+    assert_eq!(
+        of(&f, "branch-origin"),
+        ["behind: topic/a is 1 commits behind origin's: assemble would take the stale local one"]
+    );
+    assert!(
+        git(&clone, &["tag", "-l", "int/*"]).contains("int/dev/two/v1.1/5"),
+        "a local int tag survives --fetch"
     );
 }

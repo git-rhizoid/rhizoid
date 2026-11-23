@@ -35,11 +35,21 @@ pub trait GitPort {
     /// The commit `rev` names (a tag, a branch, a sha), or `None` when the clone has none.
     fn commit(&self, rev: &str) -> Result<Option<String>, PortError>;
 
-    /// The commit branch `name` points at: the local branch, else `origin`'s; `None` when neither exists.
-    fn branch(&self, name: &str) -> Result<Option<String>, PortError>;
+    /// The commit branch `name` points at and where it was found: the local branch, else `origin`'s; `None` when
+    /// neither exists.
+    fn branch(&self, name: &str) -> Result<Option<(String, BranchSource)>, PortError>;
 
     /// The tags whose names start with `prefix`.
     fn tags(&self, prefix: &str) -> Result<Vec<String>, PortError>;
+
+    /// A tag's object sha and its message (empty for a lightweight tag).
+    fn tag_object(&self, name: &str) -> Result<(String, String), PortError>;
+
+    /// The clone's worktrees.
+    fn worktrees(&self) -> Result<Vec<crate::kernel::Worktree>, PortError>;
+
+    /// Unlock the worktree at `path`, then remove it (`--force`: even with changes in it).
+    fn remove_worktree(&self, path: &std::path::Path, force: bool) -> Result<(), PortError>;
 
     /// Turn on the clone's shared rerere memory (`rerere.enabled` in its config), so every hand on the clone -
     /// rhizoid, a person resolving a conflict - records and replays the same resolutions.
@@ -70,6 +80,16 @@ pub trait GitPort {
 
     /// The paths whose content differs between the trees of `a` and `b`; empty when the trees are equal.
     fn tree_diff(&self, a: &str, b: &str) -> Result<Vec<String>, PortError>;
+}
+
+/// Where a branch was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BranchSource {
+    /// The clone's own branch.
+    Local,
+    /// `origin`'s, as last fetched: the clone has no branch of that name.
+    Origin,
 }
 
 /// How one merge into a worktree ended.

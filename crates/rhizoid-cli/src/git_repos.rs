@@ -28,8 +28,10 @@ impl<'a> GitRepos<'a> {
         }
         if self.fetch && self.fetched.borrow_mut().insert(repo.clone()) {
             // Branches pruned, then tags fetched without pruning: a tag made here (an int tag) stays.
-            for args in [["fetch", "-q", "--prune", "origin"], ["fetch", "-q", "--tags", "origin"]]
-            {
+            for args in [
+                ["fetch", "-q", "--prune", "--no-prune-tags", "origin"],
+                ["fetch", "-q", "--tags", "--no-prune-tags", "origin"],
+            ] {
                 let out = git(&dir, &args)?;
                 if !out.status.success() {
                     return Err(RepoError::Failed(format!(
@@ -180,7 +182,9 @@ impl KernelReads for GitRepos<'_> {
     }
 
     fn tag_message(&self, repo: &RepoName, tag: &str) -> Result<String, RepoError> {
-        self.read(repo, &["tag", "-l", "--format=%(contents)", tag])
+        crate::git_cli::tag_object(&self.clone_dir(repo)?, tag)
+            .map(|(_, message)| message)
+            .map_err(|e| RepoError::Failed(format!("{repo}: {e}")))
     }
 
     fn tree_equal(&self, repo: &RepoName, a: &str, b: &str) -> Result<bool, RepoError> {
@@ -189,35 +193,8 @@ impl KernelReads for GitRepos<'_> {
     }
 
     fn worktrees(&self, repo: &RepoName) -> Result<Vec<Worktree>, RepoError> {
-        let list = self.read(repo, &["worktree", "list", "--porcelain", "-z"])?;
-        let mut out = Vec::new();
-        let mut current: Option<Worktree> = None;
-        for field in list.split('\0') {
-            if let Some(path) = field.strip_prefix("worktree ") {
-                out.extend(current.take());
-                current = Some(Worktree {
-                    path: path.to_string(),
-                    head: None,
-                    lock_reason: None,
-                    clean: None,
-                });
-            } else if let Some(w) = current.as_mut() {
-                if let Some(head) = field.strip_prefix("HEAD ") {
-                    w.head = Some(head.to_string());
-                } else if let Some(reason) = field.strip_prefix("locked ") {
-                    w.lock_reason = Some(reason.to_string());
-                }
-            }
-        }
-        out.extend(current);
-        for w in &mut out {
-            let status = git(Path::new(&w.path), &["status", "--porcelain"]);
-            w.clean = match status {
-                Ok(o) if o.status.success() => Some(o.stdout.is_empty()),
-                _ => None,
-            };
-        }
-        Ok(out)
+        crate::git_cli::worktrees(&self.clone_dir(repo)?)
+            .map_err(|e| RepoError::Failed(format!("{repo}: {e}")))
     }
 }
 

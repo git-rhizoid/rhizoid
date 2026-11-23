@@ -106,3 +106,13 @@ fn real_as_far_as_it_exists(wanted: &Path) -> Result<PathBuf, String> {
     }
     Ok(real)
 }
+
+/// `rhizoid assemble --done TAG`: unlock and remove the worktree assemble locked for TAG; print what went.
+pub fn done(repo: &Path, tag: &str, force: bool) -> Result<(), String> {
+    let path =
+        rhizoid_core::assemble::done(&GitCli::new(repo), tag, force).map_err(|e| e.to_string())?;
+    crate::commands::status::write_report(
+        &mut std::io::stdout().lock(),
+        &format!("done={tag}\nremoved={path}\n"),
+    )
+}

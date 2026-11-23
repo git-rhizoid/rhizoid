@@ -84,6 +84,7 @@ enum Request {
     Unbuilt { verb: Verb, target: Option<String> },
     Status(Ask),
     Assemble(commands::assemble::Ask),
+    AssembleDone { tag: String, repo: PathBuf, force: bool },
     Completions(Shell),
     Man,
 }
@@ -140,6 +141,16 @@ fn request(r: &Resolution) -> Result<Request, String> {
                 fetch: Contract::FETCH.get_from(r).unwrap_or(false),
                 json: Contract::JSON.get_from(r).unwrap_or(false),
             })
+        }
+        Command::Assemble if Contract::DONE.get_from(r).is_some_and(|t| !t.is_empty()) => {
+            Request::AssembleDone {
+                tag: Contract::DONE.get_from(r).unwrap_or_default(),
+                repo: match Contract::REPO.get_from(r).filter(|s| !s.is_empty()) {
+                    Some(d) => d.into(),
+                    None => current_dir()?,
+                },
+                force: Contract::FORCE.get_from(r).unwrap_or(false),
+            }
         }
         Command::Assemble => Request::Assemble(commands::assemble::Ask {
             list: Contract::LIST.get_from(r).ok_or("assemble needs the name of a list")?,
@@ -200,6 +211,15 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Ok(Request::AssembleDone { tag, repo, force }) => {
+            match commands::assemble::done(&repo, &tag, force) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("rhizoid: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Ok(Request::Assemble(ask)) => match commands::assemble::run(&ask) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,

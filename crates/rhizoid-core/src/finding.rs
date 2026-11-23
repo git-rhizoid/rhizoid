@@ -57,8 +57,8 @@ pub enum Check {
     KernelScheme,
     /// A topic against the newest release, a backport against the base its name says.
     TopicBase,
-    /// An int branch against the tags assemble made for it.
-    IntByHand,
+    /// A local topic or backport branch against `origin`'s of the same name.
+    BranchOrigin,
     /// An int tag's recipe, read back from its message, against the branches now.
     IntRecipe,
     /// An assembled worktree against its tag.
@@ -81,7 +81,7 @@ impl Check {
             Check::ForkTrack => "fork-track",
             Check::KernelScheme => "kernel-scheme",
             Check::TopicBase => "topic-base",
-            Check::IntByHand => "int-by-hand",
+            Check::BranchOrigin => "branch-origin",
             Check::IntRecipe => "int-recipe",
             Check::WorktreeTag => "worktree-tag",
         }

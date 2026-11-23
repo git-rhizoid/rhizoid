@@ -1,12 +1,13 @@
 //! Kernel edges for `status`: one kernel clone, read against the branch and tag scheme its graph names, the
 //! upstream releases it carries, and what `rhizoid assemble` made in it.
 //!
-//! The checks the structure review asked for (Steward, 2026-11-23): a branch or tag outside the scheme, a
-//! commit on an `int/` branch not made by assemble, a topic not on the newest release, an int tag's recipe read
-//! back from its message (a branch moved since), an assembled worktree whose tree is not its tag's. What the
-//! clone cannot say is `not-known-yet`, never a verdict.
+//! The checks the structure review asked for (Steward, 2026-11-23): a branch or tag outside the scheme (test
+//! kernels are `int/` tags, so an `int/` branch is outside it), a topic not on the newest release, a local topic
+//! that is not `origin`'s, an int tag's recipe read back from its message (a branch moved since, or no recipe:
+//! not made by assemble), rhizoid's worktrees and their tags. What the clone cannot say is `not-known-yet`.
+//! A fork and its upstream are a `[[fork]]` edge.
 
-use crate::assemble::{LOCK_REASON_PREFIX, TAG_MESSAGE_START};
+use crate::assemble::{assembled_for, recipe_of};
 use crate::finding::{Check, Finding, Verdict};
 use crate::graph::RepoName;
 use crate::repos::RepoError;
@@ -39,25 +40,33 @@ fn default_release_prefix() -> String {
 #[serde(deny_unknown_fields)]
 pub struct Scheme {
     /// The branch names.
+    #[serde(default = "default_branches")]
     pub branches: Vec<Pattern>,
     /// The tag names, beside the release tags.
+    #[serde(default = "default_tags")]
     pub tags: Vec<Pattern>,
 }
 
+fn patterns(texts: &[&str]) -> Vec<Pattern> {
+    texts
+        .iter()
+        .map(|s| Pattern::try_from(s.to_string()).expect("the default scheme parses"))
+        .collect()
+}
+
+fn default_branches() -> Vec<Pattern> {
+    patterns(&["main", "master", "topic/ITEM", "backport/ITEM/BASE", "wip/LANE/WHAT"])
+}
+
+fn default_tags() -> Vec<Pattern> {
+    patterns(&["topic/ITEM/vN", "int/DEVICE/LIST/BASE/N", "archive/NAME"])
+}
+
 impl Default for Scheme {
-    /// The scheme of linux-phone-oco's structure review (decision 2026-11-23-structure-git-flows-run-on-rhizoid).
+    /// The scheme of linux-phone-oco's structure review (decision 2026-11-23-structure-kernel-topics-and-integration,
+    /// as amended: test kernels are `int/` tags, never branches), with the clone's `main` and `master`.
     fn default() -> Self {
-        let p = |s: &str| Pattern::try_from(s.to_string()).expect("the default scheme parses");
-        Scheme {
-            branches: ["topic/ITEM", "backport/ITEM/BASE", "wip/LANE/WHAT", "int/DEVICE/LIST"]
-                .into_iter()
-                .map(p)
-                .collect(),
-            tags: ["topic/ITEM/vN", "int/DEVICE/LIST/BASE/N", "archive/NAME"]
-                .into_iter()
-                .map(p)
-                .collect(),
-        }
+        Scheme { branches: default_branches(), tags: default_tags() }
     }
 }
 
@@ -150,7 +159,7 @@ pub trait KernelReads {
         rev: &str,
         prefix: &str,
     ) -> Result<Option<String>, RepoError>;
-    /// An annotated tag's message (empty for a lightweight tag).
+    /// An annotated tag's message; empty for a lightweight tag (not its commit's message).
     fn tag_message(&self, repo: &RepoName, tag: &str) -> Result<String, RepoError>;
     /// Whether the trees of `a` and `b` are the same.
     fn tree_equal(&self, repo: &RepoName, a: &str, b: &str) -> Result<bool, RepoError>;
@@ -165,7 +174,7 @@ pub fn kernel_status(kernels: &[Kernel], git: &dyn KernelReads) -> Result<Vec<Fi
         let clone = KernelClone::read(k, git)?;
         clone.scheme(&mut out);
         clone.topics(&mut out)?;
-        clone.int_branches(&mut out)?;
+        clone.branches_against_origin(&mut out)?;
         clone.int_tags(&mut out)?;
         clone.worktrees(&mut out)?;
     }
@@ -215,11 +224,12 @@ impl<'a> KernelClone<'a> {
             .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
     }
 
-    /// The newest release tag: the highest version, a release above its own release candidates.
+    /// The newest release tag: the highest version; release candidates (`-rcN`) do not count, a stable point
+    /// release (`v6.18.5`) does.
     fn newest_release(&self) -> Option<&str> {
         self.tags
             .keys()
-            .filter(|t| self.is_release(t))
+            .filter(|t| self.is_release(t) && !t.contains("-rc"))
             .max_by_key(|t| release_order(t, &self.kernel.release_prefix))
             .map(String::as_str)
     }
@@ -233,21 +243,24 @@ impl<'a> KernelClone<'a> {
             .keys()
             .filter(|t| !self.is_release(t) && !scheme.tags.iter().any(|p| p.matches(t)))
             .collect();
-        for b in &stray_branches {
-            out.push(self.finding(
+        let stray = |kind: &str, names: &[&String]| {
+            let shown: Vec<&str> = names.iter().take(STRAYS_SHOWN).map(|n| n.as_str()).collect();
+            let more = match names.len().saturating_sub(STRAYS_SHOWN) {
+                0 => String::new(),
+                k => format!(" and {k} more"),
+            };
+            self.finding(
                 Check::KernelScheme,
                 "scheme",
                 Verdict::MovedByHand,
-                format!("branch {b} is outside the scheme"),
-            ));
+                format!("{} {kind} outside the scheme: {}{more}", names.len(), shown.join(", ")),
+            )
+        };
+        if !stray_branches.is_empty() {
+            out.push(stray("branches", &stray_branches));
         }
-        for t in &stray_tags {
-            out.push(self.finding(
-                Check::KernelScheme,
-                "scheme",
-                Verdict::MovedByHand,
-                format!("tag {t} is outside the scheme"),
-            ));
+        if !stray_tags.is_empty() {
+            out.push(stray("tags", &stray_tags));
         }
         if stray_branches.is_empty() && stray_tags.is_empty() {
             out.push(self.finding(
@@ -263,15 +276,21 @@ impl<'a> KernelClone<'a> {
         }
     }
 
+    /// The branches a list may name: `topic/ITEM` and `backport/ITEM/BASE`, with their commits.
+    fn listable(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.heads.iter().filter(|(b, _)| {
+            let parts: Vec<&str> = b.split('/').collect();
+            matches!(parts.as_slice(), ["topic", _] | ["backport", _, _])
+        })
+    }
+
     fn topics(&self, out: &mut Vec<Finding>) -> Result<(), RepoError> {
         let newest = self.newest_release();
-        for (branch, sha) in &self.heads {
-            let parts: Vec<&str> = branch.split('/').collect();
-            match parts.as_slice() {
-                ["topic", _] => out.push(self.topic(branch, sha, newest)?),
-                ["backport", _, base] => out.push(self.backport(branch, sha, base)?),
-                _ => {}
-            }
+        for (branch, sha) in self.listable() {
+            out.push(match branch.split('/').collect::<Vec<_>>().as_slice() {
+                ["backport", _, base] => self.backport(branch, sha, base)?,
+                _ => self.topic(branch, sha, newest)?,
+            });
         }
         Ok(())
     }
@@ -295,13 +314,25 @@ impl<'a> KernelClone<'a> {
             ));
         }
         Ok(match self.git.nearest_release(self.repo(), sha, &self.kernel.release_prefix)? {
-            Some(base) => self.finding(Check::TopicBase, newest, Verdict::Behind, format!("{branch} is on {base}; the newest release is {newest}")),
-            None => self.finding(Check::TopicBase, newest, Verdict::NotKnownYet, format!("{branch} has no release under it (a fork commit?); the newest release is {newest}")),
+            Some(base) => self.finding(
+                Check::TopicBase,
+                newest,
+                Verdict::Behind,
+                format!("{branch} is on {base}; the newest release is {newest}"),
+            ),
+            None => self.finding(
+                Check::TopicBase,
+                newest,
+                Verdict::NotKnownYet,
+                format!("{branch} has no release under it (a fork commit?); the newest release is {newest}"),
+            ),
         })
     }
 
     fn backport(&self, branch: &str, sha: &str, base: &str) -> Result<Finding, RepoError> {
-        let Some(base_sha) = self.tags.get(base).or_else(|| self.heads.get(base)) else {
+        let found =
+            self.tags.get(base).or_else(|| self.heads.get(base)).or_else(|| self.origin.get(base));
+        let Some(base_sha) = found else {
             return Ok(self.finding(
                 Check::TopicBase,
                 base,
@@ -326,49 +357,31 @@ impl<'a> KernelClone<'a> {
         })
     }
 
-    /// The tags `rhizoid assemble` wrote for `int/DEVICE/LIST` (any base), with their commits.
-    fn assembled_tags(&self, int_branch: &str) -> Result<Vec<(&String, &String)>, RepoError> {
-        let prefix = format!("{int_branch}/");
-        let mut found = Vec::new();
-        for (tag, sha) in self.tags.iter().filter(|(t, _)| t.starts_with(&prefix)) {
-            if self.git.tag_message(self.repo(), tag)?.starts_with(TAG_MESSAGE_START) {
-                found.push((tag, sha));
+    /// A listable branch whose local commit is not `origin`'s: assemble takes the local one, so it must be said.
+    fn branches_against_origin(&self, out: &mut Vec<Finding>) -> Result<(), RepoError> {
+        let mut equal = 0;
+        for (branch, local) in self.listable() {
+            let Some(theirs) = self.origin.get(branch) else { continue };
+            if theirs == local {
+                equal += 1;
+                continue;
             }
-        }
-        Ok(found)
-    }
-
-    fn int_branches(&self, out: &mut Vec<Finding>) -> Result<(), RepoError> {
-        for (branch, tip) in self.heads.iter().filter(|(b, _)| b.starts_with("int/")) {
-            let mut nearest: Option<(&String, u64)> = None;
-            for (tag, sha) in self.assembled_tags(branch)? {
-                if self.git.is_ancestor(self.repo(), sha, tip)? {
-                    let n = self.git.count(self.repo(), sha, tip)?;
-                    if nearest.map_or(true, |(_, best)| n < best) {
-                        nearest = Some((tag, n));
-                    }
-                }
-            }
-            out.push(match nearest {
-                Some((tag, 0)) => self.finding(
-                    Check::IntByHand,
-                    "rhizoid assemble",
-                    Verdict::Current,
-                    format!("{branch} is at {tag}"),
-                ),
-                Some((tag, n)) => self.finding(
-                    Check::IntByHand,
-                    "rhizoid assemble",
-                    Verdict::MovedByHand,
-                    format!("{branch} has {n} commits not made by assemble, after {tag}"),
-                ),
-                None => self.finding(
-                    Check::IntByHand,
-                    "rhizoid assemble",
-                    Verdict::MovedByHand,
-                    format!("{branch} has no assembled tag under it: committed by hand"),
-                ),
+            let ahead = self.git.count(self.repo(), theirs, local)?;
+            let behind = self.git.count(self.repo(), local, theirs)?;
+            let source = format!("origin/{branch}");
+            out.push(match (ahead, behind) {
+                (0, n) => self.finding(Check::BranchOrigin, &source, Verdict::Behind, format!("{branch} is {n} commits behind origin's: assemble would take the stale local one")),
+                (n, 0) => self.finding(Check::BranchOrigin, &source, Verdict::MovedByHand, format!("{branch} has {n} commits origin does not")),
+                (a, b) => self.finding(Check::BranchOrigin, &source, Verdict::MovedByHand, format!("{branch} has diverged from origin's: {a} commits ahead, {b} behind")),
             });
+        }
+        if equal > 0 {
+            out.push(self.finding(
+                Check::BranchOrigin,
+                "origin",
+                Verdict::Current,
+                format!("{equal} topic and backport branches are origin's"),
+            ));
         }
         Ok(())
     }
@@ -390,39 +403,41 @@ impl<'a> KernelClone<'a> {
     }
 
     fn recipe(&self, tag: &str) -> Result<Finding, RepoError> {
-        let message = self.git.tag_message(self.repo(), tag)?;
-        if !message.starts_with(TAG_MESSAGE_START) {
+        let Some(recipe) = recipe_of(&self.git.tag_message(self.repo(), tag)?) else {
             return Ok(self.finding(
                 Check::IntRecipe,
                 tag,
                 Verdict::MovedByHand,
                 format!("{tag} was not made by rhizoid assemble: no recipe in it"),
             ));
-        }
-        let recipe: BTreeMap<&str, &str> =
-            message.lines().filter_map(|l| l.split_once('=')).collect();
+        };
         let mut moved = Vec::new();
         let mut i = 1;
-        while let (Some(branch), Some(sha)) = (
-            recipe.get(format!("entry.{i}.branch").as_str()),
-            recipe.get(format!("entry.{i}.sha").as_str()),
-        ) {
-            let now = self.heads.get(*branch).or_else(|| self.origin.get(*branch));
-            match now {
+        while let (Some(branch), Some(sha)) =
+            (recipe.get(&format!("entry.{i}.branch")), recipe.get(&format!("entry.{i}.sha")))
+        {
+            match self.heads.get(branch).or_else(|| self.origin.get(branch)) {
                 Some(now) if now == sha => {}
                 Some(_) => moved.push(format!("{branch} moved")),
                 None => moved.push(format!("{branch} is gone")),
             }
             i += 1;
         }
-        let entries = i - 1;
-        let base = recipe.get("base").copied().unwrap_or("?");
+        let base = recipe.get("base").map_or("?", String::as_str);
+        if i == 1 {
+            return Ok(self.finding(
+                Check::IntRecipe,
+                tag,
+                Verdict::MovedByHand,
+                format!("{tag}'s recipe names no entry: not as rhizoid assemble writes one"),
+            ));
+        }
         Ok(if moved.is_empty() {
             self.finding(
                 Check::IntRecipe,
                 tag,
                 Verdict::Current,
-                format!("{entries} entries on {base}; every branch is where the tag took it"),
+                format!("{} entries on {base}; every branch is where the tag took it", i - 1),
             )
         } else {
             self.finding(
@@ -434,58 +449,62 @@ impl<'a> KernelClone<'a> {
         })
     }
 
+    /// rhizoid's worktrees: each locked one against its tag; an unlocked one in a `rhizoid` home was left at a
+    /// conflict.
     fn worktrees(&self, out: &mut Vec<Finding>) -> Result<(), RepoError> {
         for w in self.git.worktrees(self.repo())? {
-            let Some(tag) = w.lock_reason.as_deref().and_then(assembled_for) else { continue };
-            let tag_sha = self.tags.get(tag);
-            let finding = match (tag_sha, w.head.as_deref(), w.clean) {
-                (None, _, _) => self.finding(
+            let tag = w.lock_reason.as_deref().and_then(assembled_for);
+            let in_home = std::path::Path::new(&w.path)
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|n| n == "rhizoid");
+            let finding = match tag {
+                None if in_home && w.lock_reason.is_none() => self.finding(
                     Check::WorktreeTag,
-                    tag,
-                    Verdict::MovedByHand,
-                    format!("{}: {tag} was never made (the run stopped at a conflict?)", w.path),
+                    "rhizoid assemble",
+                    Verdict::Behind,
+                    format!("{}: unlocked, left at a conflict - resolve and commit there, assemble again, then git worktree remove it", w.path),
                 ),
-                (Some(_), None, _) | (Some(_), _, None) => self.finding(
-                    Check::WorktreeTag,
-                    tag,
-                    Verdict::NotKnownYet,
-                    format!("{}: its folder could not be read", w.path),
-                ),
-                (Some(_), Some(head), Some(clean)) => {
-                    if !self.git.tree_equal(self.repo(), head, tag)? {
-                        self.finding(
-                            Check::WorktreeTag,
-                            tag,
-                            Verdict::MovedByHand,
-                            format!("{}: its commit's tree is not {tag}'s", w.path),
-                        )
-                    } else if !clean {
-                        self.finding(
-                            Check::WorktreeTag,
-                            tag,
-                            Verdict::MovedByHand,
-                            format!("{}: changed beyond {tag}", w.path),
-                        )
-                    } else {
-                        self.finding(
-                            Check::WorktreeTag,
-                            tag,
-                            Verdict::Current,
-                            format!("{} is {tag}", w.path),
-                        )
-                    }
-                }
+                None => continue,
+                Some(tag) => self.locked(&w, tag)?,
             };
             out.push(finding);
         }
         Ok(())
     }
+
+    fn locked(&self, w: &Worktree, tag: &str) -> Result<Finding, RepoError> {
+        let at = |verdict, how: String| {
+            self.finding(Check::WorktreeTag, tag, verdict, format!("{}: {how}", w.path))
+        };
+        Ok(match (self.tags.get(tag), w.head.as_deref(), w.clean) {
+            (None, _, _) => {
+                at(Verdict::MovedByHand, format!("locked for {tag}, which was never made"))
+            }
+            (Some(_), None, _) | (Some(_), _, None) => {
+                at(Verdict::NotKnownYet, "its folder could not be read".to_string())
+            }
+            (Some(_), Some(head), Some(clean)) => {
+                if !self.git.tree_equal(self.repo(), head, tag)? {
+                    at(
+                        Verdict::MovedByHand,
+                        format!("locked, but its commit's tree is not {tag}'s"),
+                    )
+                } else if !clean {
+                    at(Verdict::MovedByHand, format!("locked, changed beyond {tag}"))
+                } else {
+                    at(
+                        Verdict::Current,
+                        format!("locked, at {tag} (rhizoid assemble --done {tag} ends it)"),
+                    )
+                }
+            }
+        })
+    }
 }
 
-/// The tag an assembled worktree's lock reason names (`rhizoid assemble TAG: ...`).
-fn assembled_for(reason: &str) -> Option<&str> {
-    reason.strip_prefix(LOCK_REASON_PREFIX)?.split_once(':').map(|(tag, _)| tag)
-}
+/// How many stray names one finding shows; the rest are counted.
+const STRAYS_SHOWN: usize = 10;
 
 /// A release's place in order: its numbers, then a release above its candidates (`-rcN`).
 fn release_order(tag: &str, prefix: &str) -> (Vec<u64>, bool, u64) {
@@ -546,6 +565,10 @@ mod example {
         let g = Graph::parse(include_str!("../../../examples/kernel.graph.toml")).unwrap();
         assert_eq!(g.kernels.len(), 1);
         assert_eq!(g.kernels[0].scheme, super::Scheme::default());
+        let only_tags =
+            Graph::parse("[[kernel]]\nclone = \"a/b\"\nscheme = { tags = [\"keep/NAME\"] }")
+                .unwrap();
+        assert_eq!(only_tags.kernels[0].scheme.branches, super::Scheme::default().branches);
         assert!(Graph::parse(
             "[[kernel]]\nclone = \"a/b\"\nscheme = { branches = [\"x/Y\"], tags = [\"bad//\"] }"
         )

@@ -9,10 +9,11 @@
 clone = "grenudi/linux"
 release_prefix = "v"          # v6.18, v6.18-rc3: always in the scheme
 
-# the scheme of the structure review (2026-11-23), which is also the default when none is given; a pattern is
-# `/`-separated parts, each a literal with a CAPITAL placeholder at its end (N: digits; any other: one part's text)
+# the scheme of the structure review (2026-11-23; test kernels are int/ tags, never branches) with the clone's main
+# and master: the default when none is given, field by field. A pattern is `/`-separated parts, each a literal with a
+# CAPITAL placeholder at its end (N: digits; any other: one part's text)
 [kernel.scheme]
-branches = ["topic/ITEM", "backport/ITEM/BASE", "wip/LANE/WHAT", "int/DEVICE/LIST"]
+branches = ["main", "master", "topic/ITEM", "backport/ITEM/BASE", "wip/LANE/WHAT"]
 tags = ["topic/ITEM/vN", "int/DEVICE/LIST/BASE/N", "archive/NAME"]
 
 # the fork and its upstream: an edge of its own, read with git ls-remote

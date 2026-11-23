@@ -18,6 +18,6 @@ pub use graph::{Graph, RepoName};
 pub use kernel::{kernel_status, KernelReads, Worktree};
 pub use manifest::{Defaults, Manifest, ModuleEntry, ModuleOrigin};
 pub use module::ModuleMetadata;
-pub use ports::{GitHubPort, GitPort, MergeOutcome, MergeResult, PortError};
+pub use ports::{BranchSource, GitHubPort, GitPort, MergeOutcome, MergeResult, PortError};
 pub use repos::{Level, RepoError, Repos};
 pub use status::status;

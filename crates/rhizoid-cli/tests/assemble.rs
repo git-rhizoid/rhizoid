@@ -66,7 +66,7 @@ branch = "topic/b"
 for = "the b part"
 state = "known-good"
 test_run = "run-1"
-tested_commit = "0123456789ab"
+tested_commit = "TESTED"
 
 [lists.clash]
 base = "v1"
@@ -119,7 +119,8 @@ fn world() -> World {
     branch(&repo, "topic/clash", "v1", &[("a.txt", "a from topic clash\n")]);
     git(&repo, &["tag", "v2", "topic/a"]);
     let lists = root.join("topics.toml");
-    std::fs::write(&lists, LISTS).unwrap();
+    let tested = git_out(&repo, &["rev-parse", "topic/b"]);
+    std::fs::write(&lists, LISTS.replace("TESTED", &tested.trim()[..12])).unwrap();
     World { root, repo, lists }
 }
 
@@ -170,7 +171,13 @@ fn two_topics_assemble_to_a_tag_that_holds_both() {
     assert_eq!(value(&out, "entry.1.branch").as_deref(), Some("topic/a"));
     assert_eq!(value(&out, "entry.1.sha").as_deref(), Some(a_sha.trim()));
     assert_eq!(value(&out, "entry.2.state").as_deref(), Some("known-good"));
-    assert_eq!(value(&out, "entry.2.tested_commit").as_deref(), Some("0123456789ab"));
+    let b_sha = git_out(&w.repo, &["rev-parse", "topic/b"]);
+    assert_eq!(value(&out, "entry.2.tested_commit").as_deref(), Some(b_sha.trim()), "the full sha");
+    assert_eq!(value(&out, "tested").as_deref(), Some(b_sha.trim()));
+    assert_eq!(value(&out, "topic.a").as_deref(), Some(a_sha.trim()));
+    assert_eq!(value(&out, "topic.b").as_deref(), Some(b_sha.trim()));
+    assert_eq!(value(&out, "entry.1.source").as_deref(), Some("local"));
+    assert_eq!(value(&out, "unchanged"), None);
 
     let message = git_out(&w.repo, &["tag", "-l", "--format=%(contents)", "int/dev/two/v1/1"]);
     assert!(message.contains(&format!("base_sha={}", base_sha.trim())), "{message}");
@@ -199,6 +206,10 @@ fn a_conflict_stops_and_names_both_entries() {
     assert_eq!(value(&out, "conflict.path.1").as_deref(), Some("a.txt"));
     assert_eq!(value(&out, "tag"), None);
     assert_eq!(git_out(&w.repo, &["tag", "-l", "int/*"]), "");
+    let worktree = value(&out, "worktree").unwrap();
+    let list = git_out(&w.repo, &["worktree", "list", "--porcelain"]);
+    let entry = list.split("\n\n").find(|e| e.contains(&worktree)).expect("the worktree is git's");
+    assert!(!entry.contains("locked"), "left unlocked for a hand to resolve: {entry}");
 }
 
 #[test]
@@ -265,14 +276,24 @@ fn a_worktree_outside_the_home_is_refused() {
 }
 
 #[test]
-fn a_second_run_gives_the_next_number_in_a_worktree_of_its_own() {
+fn an_unchanged_list_is_its_tag_and_a_changed_one_the_next_number() {
     let w = world();
     let first = w.assemble(&["two"]);
     let second = w.assemble(&["two"]);
     assert_eq!(second.status.code(), Some(0), "{second:?}");
-    assert_eq!(value(&first, "tag").as_deref(), Some("int/dev/two/v1/1"));
-    assert_eq!(value(&second, "tag").as_deref(), Some("int/dev/two/v1/2"));
-    assert_eq!(value(&second, "worktree").map(PathBuf::from), Some(w.home().join("dev-two-v1-2")));
+    assert_eq!(value(&second, "tag"), value(&first, "tag"));
+    assert_eq!(value(&second, "tag_sha"), value(&first, "tag_sha"));
+    assert_eq!(value(&second, "unchanged").as_deref(), Some("yes"));
+    assert_eq!(value(&second, "worktree"), value(&first, "worktree"), "its worktree, reused");
+    assert_eq!(git_out(&w.repo, &["tag", "-l", "int/*"]).lines().count(), 1);
+
+    git(&w.repo, &["checkout", "-q", "topic/a"]);
+    commit(&w.repo, &[("a.txt", "a, again\n")], "again");
+    git(&w.repo, &["checkout", "-q", "main"]);
+    let third = w.assemble(&["two"]);
+    assert_eq!(third.status.code(), Some(0), "{third:?}");
+    assert_eq!(value(&third, "tag").as_deref(), Some("int/dev/two/v1/2"));
+    assert_eq!(value(&third, "worktree").map(PathBuf::from), Some(w.home().join("dev-two-v1-2")));
     assert!(w.home().join("dev-two-v1-1").is_dir(), "several assembled worktrees stay alive");
 }
 
@@ -326,6 +347,27 @@ fn fetch_prunes_a_branch_the_remote_no_longer_has() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert!(!git_out(&clone, &["branch", "-r"]).contains("origin/topic/clash"), "pruned");
+    assert_eq!(
+        value(&out, "entry.1.source").as_deref(),
+        Some("origin"),
+        "no local topic/a in the clone"
+    );
+
+    git(&clone, &["config", "remote.origin.pruneTags", "true"]);
+    let again = Command::new(bin())
+        .args(["assemble", "two", "--fetch", "--lists"])
+        .arg(&w.lists)
+        .arg("--repo")
+        .arg(&clone)
+        .env("AGENT_WORKTREES", w.root.join("worktrees"))
+        .envs(IDENTITY)
+        .output()
+        .unwrap();
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert!(
+        git_out(&clone, &["tag", "-l", "int/*"]).contains("int/dev/two/v1/1"),
+        "a local tag survives pruneTags"
+    );
 }
 
 #[test]
@@ -378,4 +420,55 @@ fn the_home_is_named_after_the_main_clone_from_a_linked_worktree() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(value(&out, "worktree").map(PathBuf::from), Some(w.home().join("dev-two-v1-1")));
+}
+
+impl World {
+    fn done(&self, args: &[&str]) -> Output {
+        Command::new(bin())
+            .args(["assemble", "--done"])
+            .args(args)
+            .arg("--repo")
+            .arg(&self.repo)
+            .output()
+            .unwrap()
+    }
+}
+
+#[test]
+fn done_ends_a_tags_worktree_and_refuses_one_with_changes_unless_forced() {
+    let w = world();
+    let out = w.assemble(&["two"]);
+    let worktree = PathBuf::from(value(&out, "worktree").unwrap());
+    std::fs::write(worktree.join("a.txt"), "changed\n").unwrap();
+    let refused = w.done(&["int/dev/two/v1/1"]);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("--force"), "{refused:?}");
+    assert!(worktree.is_dir());
+
+    let forced = w.done(&["int/dev/two/v1/1", "--force"]);
+    assert_eq!(forced.status.code(), Some(0), "{forced:?}");
+    assert_eq!(value(&forced, "removed").map(PathBuf::from), Some(worktree.clone()));
+    assert!(!worktree.exists());
+    assert!(!git_out(&w.repo, &["worktree", "list"]).contains(worktree.to_str().unwrap()));
+    assert!(git_out(&w.repo, &["tag", "-l"]).contains("int/dev/two/v1/1"), "the tag stays");
+
+    let again = w.assemble(&["two"]);
+    assert_eq!(value(&again, "unchanged").as_deref(), Some("yes"));
+    assert_eq!(value(&again, "worktree"), None, "its worktree is gone; the tag is the result");
+    let clean = w.done(&["int/dev/two/v1/9"]);
+    assert_eq!(clean.status.code(), Some(2), "{clean:?}");
+}
+
+#[test]
+fn a_tested_commit_must_be_a_commits_sha() {
+    let w = world();
+    for name in ["HEAD", "topic/b", "abcdef0123"] {
+        let text = std::fs::read_to_string(&w.lists).unwrap();
+        let tested = text.lines().find(|l| l.starts_with("tested_commit")).unwrap().to_string();
+        std::fs::write(&w.lists, text.replace(&tested, &format!("tested_commit = \"{name}\"")))
+            .unwrap();
+        let out = w.assemble(&["two"]);
+        assert_eq!(out.status.code(), Some(2), "{name}: {out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("is not a commit's sha"), "{out:?}");
+    }
 }

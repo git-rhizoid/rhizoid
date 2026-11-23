@@ -2,7 +2,8 @@
 //! `2026-11-23-standard-tools-drive-cut-or-write`) - its worktrees and its rerere memory are the ones a
 //! person's git sees. Git runs with `LC_ALL=C` and never prompts.
 
-use rhizoid_core::{GitPort, MergeResult, PortError};
+use rhizoid_core::assemble::LOCK_REASON_PREFIX;
+use rhizoid_core::{BranchSource, GitPort, MergeResult, PortError, Worktree};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -63,18 +64,39 @@ fn path_arg(p: &Path) -> Result<&str, PortError> {
 
 impl GitPort for GitCli {
     fn fetch_prune(&self) -> Result<(), PortError> {
-        self.ok(&["fetch", "-q", "--all", "--prune"]).map(drop)
+        self.ok(&["fetch", "-q", "--all", "--prune", "--no-prune-tags"]).map(drop)
     }
 
     fn commit(&self, rev: &str) -> Result<Option<String>, PortError> {
         self.verify(&self.repo, rev)
     }
 
-    fn branch(&self, name: &str) -> Result<Option<String>, PortError> {
-        match self.verify(&self.repo, &format!("refs/heads/{name}"))? {
-            Some(sha) => Ok(Some(sha)),
-            None => self.verify(&self.repo, &format!("refs/remotes/origin/{name}")),
+    fn branch(&self, name: &str) -> Result<Option<(String, BranchSource)>, PortError> {
+        if let Some(sha) = self.verify(&self.repo, &format!("refs/heads/{name}"))? {
+            return Ok(Some((sha, BranchSource::Local)));
         }
+        Ok(self
+            .verify(&self.repo, &format!("refs/remotes/origin/{name}"))?
+            .map(|sha| (sha, BranchSource::Origin)))
+    }
+
+    fn tag_object(&self, name: &str) -> Result<(String, String), PortError> {
+        tag_object(&self.repo, name).map_err(PortError)
+    }
+
+    fn worktrees(&self) -> Result<Vec<Worktree>, PortError> {
+        worktrees(&self.repo).map_err(PortError)
+    }
+
+    fn remove_worktree(&self, path: &Path, force: bool) -> Result<(), PortError> {
+        let path = path_arg(path)?;
+        self.ok(&["worktree", "unlock", path])?;
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(path);
+        self.ok(&args).map(drop)
     }
 
     fn tags(&self, prefix: &str) -> Result<Vec<String>, PortError> {
@@ -169,4 +191,73 @@ impl GitCli {
             _ => Ok(common),
         }
     }
+}
+
+/// git in `dir`, which must succeed; its stdout, or what git said.
+fn git_in(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// A tag's object sha and its message: empty unless it is an annotated tag (git would give a lightweight tag's
+/// commit message, which is no tag's recipe).
+pub fn tag_object(clone: &Path, name: &str) -> Result<(String, String), String> {
+    let format = "--format=%(objecttype)%00%(objectname)%00%(contents)";
+    let out = git_in(clone, &["for-each-ref", format, &format!("refs/tags/{name}")])?;
+    let mut f = out.splitn(3, '\0');
+    match (f.next(), f.next(), f.next()) {
+        (Some("tag"), Some(sha), Some(message)) => Ok((sha.to_string(), message.to_string())),
+        (Some(_), Some(sha), _) => Ok((sha.to_string(), String::new())),
+        _ => Err(format!("no tag {name}")),
+    }
+}
+
+/// A clone's worktrees (git 2.36 or later, for `-z`). Only the ones assemble locked are read for changes, with
+/// `--no-optional-locks`, so reading never takes a lock a running merge needs.
+pub fn worktrees(clone: &Path) -> Result<Vec<Worktree>, String> {
+    let list = git_in(clone, &["worktree", "list", "--porcelain", "-z"])?;
+    let mut out = Vec::new();
+    let mut current: Option<Worktree> = None;
+    for field in list.split('\0') {
+        if let Some(path) = field.strip_prefix("worktree ") {
+            out.extend(current.take());
+            current = Some(Worktree {
+                path: path.to_string(),
+                head: None,
+                lock_reason: None,
+                clean: None,
+            });
+        } else if let Some(w) = current.as_mut() {
+            if let Some(head) = field.strip_prefix("HEAD ") {
+                w.head = Some(head.to_string());
+            } else if let Some(reason) = field.strip_prefix("locked ") {
+                w.lock_reason = Some(reason.to_string());
+            }
+        }
+    }
+    out.extend(current);
+    for w in out
+        .iter_mut()
+        .filter(|w| w.lock_reason.as_deref().is_some_and(|r| r.starts_with(LOCK_REASON_PREFIX)))
+    {
+        w.clean = git_in(Path::new(&w.path), &["--no-optional-locks", "status", "--porcelain"])
+            .ok()
+            .map(|s| s.is_empty());
+    }
+    Ok(out)
 }

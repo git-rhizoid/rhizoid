@@ -6,7 +6,8 @@
 //! `2026-11-23-standard-tools-drive-cut-or-write`); what is rhizoid's is the list, the order, the refusals,
 //! the tag that carries the recipe, and the report a caller's record command takes.
 
-use crate::ports::{GitPort, MergeResult, PortError};
+use crate::kernel::Worktree;
+use crate::ports::{BranchSource, GitPort, MergeResult, PortError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -275,11 +276,13 @@ pub struct Ask<'a> {
 /// One entry as it was merged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Merged {
-    /// The entry as listed.
+    /// The entry as listed; a known-good entry's tested commit as a full sha.
     #[serde(flatten)]
     pub entry: Entry,
     /// The commit its branch was at.
     pub sha: String,
+    /// Where the branch was found: the clone's own, or `origin`'s.
+    pub source: BranchSource,
     /// How it went in.
     pub merged: How,
 }
@@ -303,6 +306,21 @@ impl How {
             How::RerereResolved => "rerere-resolved",
             How::AlreadyIn => "already-in",
         }
+    }
+
+    fn from_word(w: &str) -> How {
+        match w {
+            "rerere-resolved" => How::RerereResolved,
+            "already-in" => How::AlreadyIn,
+            _ => How::Merged,
+        }
+    }
+}
+
+fn source_word(s: BranchSource) -> &'static str {
+    match s {
+        BranchSource::Local => "local",
+        BranchSource::Origin => "origin",
     }
 }
 
@@ -342,9 +360,11 @@ pub struct Report {
     pub base_sha: String,
     /// The entries merged, in order (up to the one that stopped, when one did).
     pub entries: Vec<Merged>,
-    /// The worktree, locked while wanted.
-    pub worktree: String,
-    /// The tag made (none when a conflict stopped the run).
+    /// The worktree: locked once tagged, unlocked when a conflict stopped the run; none when an unchanged list
+    /// found its tag and that tag has no worktree any more.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
+    /// The tag made, or the existing tag of the same recipe (none when a conflict stopped the run).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     /// The tag object's sha.
@@ -353,6 +373,9 @@ pub struct Report {
     /// The commit the tag points at.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// The base and every entry's sha equal an existing tag's recipe: that tag is the result, none was made.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unchanged: bool,
     /// The conflict the run stopped at.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict: Option<Conflict>,
@@ -379,6 +402,7 @@ impl Report {
             let k = |f: &str| format!("entry.{}.{f}", i + 1);
             kv.push((k("branch"), m.entry.branch.clone()));
             kv.push((k("sha"), m.sha.clone()));
+            kv.push((k("source"), source_word(m.source).to_string()));
             kv.push((k("for"), m.entry.purpose.clone()));
             match &m.entry.state {
                 State::KnownGood { test_run, tested_commit } => {
@@ -393,15 +417,35 @@ impl Report {
         kv
     }
 
-    /// Every field as `key=value` pairs: the recipe, then the outcome.
+    /// Every field as `key=value` pairs: the recipe, the record lines (`topic.ITEM=sha`, `tested=`), then the
+    /// outcome.
     pub fn key_values(&self) -> Vec<(String, String)> {
         let mut kv = self.recipe();
         let mut put = |k: &str, v: &str| kv.push((k.to_string(), v.to_string()));
-        put("worktree", &self.worktree);
+        for m in &self.entries {
+            put(&m.entry.branch.replace('/', "."), &m.sha);
+        }
+        let mut tested: Vec<&str> = Vec::new();
+        for m in &self.entries {
+            if let State::KnownGood { tested_commit, .. } = &m.entry.state {
+                if !tested.contains(&tested_commit.as_str()) {
+                    tested.push(tested_commit);
+                }
+            }
+        }
+        if !tested.is_empty() {
+            put("tested", &tested.join(" "));
+        }
+        if let Some(w) = &self.worktree {
+            put("worktree", w);
+        }
         if let (Some(tag), Some(sha), Some(commit)) = (&self.tag, &self.tag_sha, &self.commit) {
             put("tag", tag);
             put("tag_sha", sha);
             put("commit", commit);
+        }
+        if self.unchanged {
+            put("unchanged", "yes");
         }
         if let Some(c) = &self.conflict {
             put("conflict.entry", &c.entry);
@@ -437,67 +481,176 @@ impl From<PortError> for AssembleError {
     }
 }
 
-/// Assemble one list: everything is read and checked before the worktree is made; then each branch is merged
-/// in order, stopping at a conflict that rerere cannot resolve; then the tag carries the recipe.
+/// Assemble one list: everything is read and checked first; a list whose base and branches are an existing
+/// tag's is that tag; otherwise each branch is merged in order into a fresh worktree, stopping at a conflict
+/// rerere cannot resolve (the worktree left unlocked, for a hand to resolve), then the tag carries the recipe and
+/// the worktree is locked until `done`.
 pub fn assemble(git: &impl GitPort, ask: &Ask) -> Result<Report, AssembleError> {
     if ask.fetch {
         git.fetch_prune()?;
     }
     let base_sha = base_commit(git, &ask.list.base)?;
-    let shas = entry_commits(git, &ask.list.entries)?;
+    let entries = entries_with_tested_shas(git, &ask.list.entries)?;
+    let branches = entry_commits(git, &entries)?;
     let reproduces = ask.reproduces.map(|c| commit_or_refuse(git, c)).transpose()?;
     let prefix = tag_prefix(ask.device, ask.list_name, &ask.list.base);
-    let n = next_number(&git.tags(&prefix)?, &prefix).map_err(AssembleError)?;
-    let tag = format!("{prefix}{n}");
-    let worktree = worktree_for(ask, n)?;
-
-    git.share_rerere()?;
-    git.add_worktree(&worktree, &base_sha)?;
-    git.lock_worktree(&worktree, &format!("{LOCK_REASON_PREFIX}{tag}: wanted until unlocked"))?;
-
+    let tags = git.tags(&prefix)?;
     let mut report = Report {
         device: ask.device.to_string(),
         list: ask.list_name.to_string(),
         base: ask.list.base.clone(),
         base_sha: base_sha.clone(),
         entries: Vec::new(),
-        worktree: worktree.display().to_string(),
+        worktree: None,
         tag: None,
         tag_sha: None,
         commit: None,
+        unchanged: false,
         conflict: None,
         reproduces: None,
     };
-    for (entry, sha) in ask.list.entries.iter().zip(&shas) {
+
+    if let Some((tag, tag_sha, recipe)) = same_recipe(git, &tags, &base_sha, &entries, &branches)? {
+        report.entries = entries
+            .iter()
+            .zip(&branches)
+            .enumerate()
+            .map(|(i, (e, (sha, source)))| Merged {
+                entry: e.clone(),
+                sha: sha.clone(),
+                source: *source,
+                merged: How::from_word(
+                    recipe.get(&format!("entry.{}.merged", i + 1)).map_or("", String::as_str),
+                ),
+            })
+            .collect();
+        report.worktree = worktree_of(git, &tag)?.map(|w| w.path);
+        report.commit = git.commit(&tag)?;
+        report.tag_sha = Some(tag_sha);
+        report.tag = Some(tag.clone());
+        report.unchanged = true;
+        compare(git, &mut report, &tag, reproduces)?;
+        return Ok(report);
+    }
+
+    let n = next_number(&tags, &prefix).map_err(AssembleError)?;
+    let tag = format!("{prefix}{n}");
+    let worktree = worktree_for(ask, n)?;
+    git.share_rerere()?;
+    git.add_worktree(&worktree, &base_sha)?;
+    report.worktree = Some(worktree.display().to_string());
+    for (entry, (sha, source)) in entries.iter().zip(&branches) {
         let message = format!("rhizoid assemble {tag}: merge {} ({})", entry.branch, entry.purpose);
-        match git.merge(&worktree, sha, &message)? {
-            MergeResult::Merged { by_rerere } => report.entries.push(Merged {
-                entry: entry.clone(),
-                sha: sha.clone(),
-                merged: if by_rerere { How::RerereResolved } else { How::Merged },
-            }),
-            MergeResult::AlreadyContained => report.entries.push(Merged {
-                entry: entry.clone(),
-                sha: sha.clone(),
-                merged: How::AlreadyIn,
-            }),
+        let merged = match git.merge(&worktree, sha, &message)? {
+            MergeResult::Merged { by_rerere: true } => How::RerereResolved,
+            MergeResult::Merged { by_rerere: false } => How::Merged,
+            MergeResult::AlreadyContained => How::AlreadyIn,
             MergeResult::Conflict { paths } => {
                 report.conflict = Some(conflict(git, &base_sha, &report.entries, entry, paths)?);
                 return Ok(report);
             }
-        }
+        };
+        report.entries.push(Merged {
+            entry: entry.clone(),
+            sha: sha.clone(),
+            source: *source,
+            merged,
+        });
     }
 
     let commit = git.head(&worktree)?;
-    let message = tag_message(&report);
-    report.tag_sha = Some(git.tag(&tag, &commit, &message)?);
+    report.tag_sha = Some(git.tag(&tag, &commit, &tag_message(&report))?);
     report.tag = Some(tag.clone());
     report.commit = Some(commit);
+    git.lock_worktree(
+        &worktree,
+        &format!("{LOCK_REASON_PREFIX}{tag}: wanted until rhizoid assemble --done {tag}"),
+    )?;
+    compare(git, &mut report, &tag, reproduces)?;
+    Ok(report)
+}
+
+/// End a tag's worktree: unlock and remove it; refused when it has changes, unless `force`. Its folder.
+pub fn done(git: &impl GitPort, tag: &str, force: bool) -> Result<String, AssembleError> {
+    let worktree = worktree_of(git, tag)?.ok_or_else(|| {
+        AssembleError(format!("no worktree of {tag} (rhizoid assemble locks each one it tags)"))
+    })?;
+    if worktree.clean != Some(true) && !force {
+        return Err(AssembleError(format!(
+            "refused: {} has changes beyond {tag} (or could not be read) - --force removes it anyway",
+            worktree.path
+        )));
+    }
+    git.remove_worktree(Path::new(&worktree.path), force)?;
+    Ok(worktree.path)
+}
+
+/// The worktree assemble locked for `tag`, if one is left.
+fn worktree_of(git: &impl GitPort, tag: &str) -> Result<Option<Worktree>, AssembleError> {
+    Ok(git
+        .worktrees()?
+        .into_iter()
+        .find(|w| w.lock_reason.as_deref().and_then(assembled_for) == Some(tag)))
+}
+
+/// The tag a lock reason assemble wrote names (`rhizoid assemble TAG: ...`).
+pub fn assembled_for(reason: &str) -> Option<&str> {
+    reason.strip_prefix(LOCK_REASON_PREFIX)?.split_once(':').map(|(tag, _)| tag)
+}
+
+/// The recipe lines (`key=value`) of a tag's message, when assemble wrote it.
+pub fn recipe_of(message: &str) -> Option<BTreeMap<String, String>> {
+    if !message.starts_with(TAG_MESSAGE_START) {
+        return None;
+    }
+    Some(
+        message
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    )
+}
+
+/// The newest existing tag whose recipe has this base and these branches at these commits, in this order: its
+/// name, its object's sha and its recipe.
+#[allow(clippy::type_complexity)]
+fn same_recipe(
+    git: &impl GitPort,
+    tags: &[String],
+    base_sha: &str,
+    entries: &[Entry],
+    branches: &[(String, BranchSource)],
+) -> Result<Option<(String, String, BTreeMap<String, String>)>, AssembleError> {
+    let mut found: Option<(u64, String, String, BTreeMap<String, String>)> = None;
+    for tag in tags {
+        let Some(n) = tag.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) else { continue };
+        let (object, message) = git.tag_object(tag)?;
+        let Some(recipe) = recipe_of(&message) else { continue };
+        let same = recipe.get("base_sha").map(String::as_str) == Some(base_sha)
+            && !recipe.contains_key(&format!("entry.{}.branch", entries.len() + 1))
+            && entries.iter().zip(branches).enumerate().all(|(i, (e, (sha, _)))| {
+                recipe.get(&format!("entry.{}.branch", i + 1)) == Some(&e.branch)
+                    && recipe.get(&format!("entry.{}.sha", i + 1)) == Some(sha)
+            });
+        if same && found.as_ref().map_or(true, |(best, ..)| n > *best) {
+            found = Some((n, tag.clone(), object, recipe));
+        }
+    }
+    Ok(found.map(|(_, tag, object, recipe)| (tag, object, recipe)))
+}
+
+fn compare(
+    git: &impl GitPort,
+    report: &mut Report,
+    tag: &str,
+    reproduces: Option<String>,
+) -> Result<(), AssembleError> {
     if let Some(other) = reproduces {
-        let paths = git.tree_diff(&tag, &other)?;
+        let paths = git.tree_diff(tag, &other)?;
         report.reproduces = Some(Reproduces { commit: other, equal: paths.is_empty(), paths });
     }
-    Ok(report)
+    Ok(())
 }
 
 fn base_commit(git: &impl GitPort, base: &str) -> Result<String, AssembleError> {
@@ -511,17 +664,49 @@ fn commit_or_refuse(git: &impl GitPort, rev: &str) -> Result<String, AssembleErr
         .ok_or_else(|| AssembleError(format!("--reproduces {rev}: no such commit in the clone")))
 }
 
-fn entry_commits(git: &impl GitPort, entries: &[Entry]) -> Result<Vec<String>, AssembleError> {
-    let mut shas = Vec::new();
+/// The entries, each known-good one's tested commit resolved to a full sha: it must be a commit's sha (or an
+/// unambiguous prefix of one), never a name that moves (HEAD, a branch, a tag).
+fn entries_with_tested_shas(
+    git: &impl GitPort,
+    entries: &[Entry],
+) -> Result<Vec<Entry>, AssembleError> {
+    entries
+        .iter()
+        .map(|e| match &e.state {
+            State::Trying => Ok(e.clone()),
+            State::KnownGood { test_run, tested_commit } => {
+                let is_sha = (4..=40).contains(&tested_commit.len())
+                    && tested_commit.bytes().all(|b| b.is_ascii_hexdigit());
+                let full = if is_sha { git.commit(tested_commit)? } else { None };
+                let full = full.ok_or_else(|| {
+                    AssembleError(format!(
+                        "{}: tested_commit {tested_commit} is not a commit's sha in the clone (a name that moves, like HEAD or a branch, cannot say what was tested)",
+                        e.branch
+                    ))
+                })?;
+                Ok(Entry {
+                    state: State::KnownGood { test_run: test_run.clone(), tested_commit: full },
+                    ..e.clone()
+                })
+            }
+        })
+        .collect()
+}
+
+fn entry_commits(
+    git: &impl GitPort,
+    entries: &[Entry],
+) -> Result<Vec<(String, BranchSource)>, AssembleError> {
+    let mut found = Vec::new();
     let mut missing = Vec::new();
     for e in entries {
         match git.branch(&e.branch)? {
-            Some(sha) => shas.push(sha),
+            Some(b) => found.push(b),
             None => missing.push(e.branch.as_str()),
         }
     }
     if missing.is_empty() {
-        Ok(shas)
+        Ok(found)
     } else {
         Err(AssembleError(format!("no branch {} (locally or on origin)", missing.join(", "))))
     }
