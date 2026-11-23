@@ -4,12 +4,13 @@
 # The graph is read from origin/main of the clone RHIZOID_GRAPH_CLONE names (an absolute path, in
 # ~/.config/rhizoid/bump.env, with RHIZOID_GRAPH_FILE when it is not rhizoid.graph.toml), copied to the runtime
 # folder: a shared clone's checkout is never changed. The token is read at run time from the lab's private file,
-# never written here.
+# never written here. A gate runs with this PATH, not a login shell's: ~/.cargo/bin first, for a Rust follower's
+# gate (cargo, rust-script); bump.env may set another, as an EnvironmentFile overrides Environment=.
 [Unit]
 Description=Move each pin rhizoid-bump moves to its source's newest release, landed through the follower's checks
 [Service]
 Type=oneshot
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.cargo/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=LAND_RELEASE=0
 EnvironmentFile=%h/.config/rhizoid/bump.env
 RuntimeDirectory=rhizoid-bump

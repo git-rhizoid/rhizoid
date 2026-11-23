@@ -313,7 +313,9 @@ you trust.
 **On a timer.** [`packaging/systemd/rhizoid-bump.service`](packaging/systemd/rhizoid-bump.service) and its `.timer`
 run `bump now --fetch --land` hourly as a user unit, on idealkb-update-pins' pattern: the graph read from
 `origin/main` of the clone `RHIZOID_GRAPH_CLONE` names in `~/.config/rhizoid/bump.env` (`RHIZOID_GRAPH_FILE` when it
-is not `rhizoid.graph.toml`), the token from the lab's private file at run time. Install: copy both to
+is not `rhizoid.graph.toml`), the token from the lab's private file at run time. A gate runs with the unit's PATH, not a login
+shell's: `~/.cargo/bin`, `~/.local/bin`, then the system's - a gate that needs another tool on PATH sets it in
+`bump.env`. Install: copy both to
 `~/.config/systemd/user/`, write the env file (absolute paths: it expands no `~`), `systemctl --user enable --now rhizoid-bump.timer`.
 
 A tool pin is a TOML `key` or a `line` (as for `status`); a key whose value carries more than the version says how,
