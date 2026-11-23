@@ -70,6 +70,21 @@ example. Each check runs only when the edge gives what it needs:
 | `recipe` | - | the newest tag of each assembled list and base: its recipe, read back from its message, names every branch where it is now | `behind`: a branch moved or is gone, so assemble again; `moved-by-hand`: a tag of the `assembled` shape with no recipe (made by hand) |
 | `worktree-tag` | - | each worktree assemble locked has its tag's tree and no change | `moved-by-hand`: a different tree, a change, or a tag that was never made; `behind`: an unlocked worktree in a `rhizoid` home, left at a conflict |
 
+**A table of pins** (`[[pins]]`) is covered whole (decision 2026-11-23-every-pin-one-pushed-mover (3)): every key of a
+follower's TOML table is a `[[tool]]` edge's (its `key` at or under the table, in that file, for that follower) or
+named `unpinned` with why it is not pinned (a `line` tool covers no key: name it unpinned); `pin-coverage` is `moved-by-hand` for a key that is neither (a pin no
+mover moves), for an unpinned key the table no longer has and for one an edge covers, every problem in one line. An unpinned key with no why is refused when the graph
+is read.
+
+```toml
+[[pins]]
+follower = "acme/lab"
+file = "lab.toml"
+table = "tools"                            # the table's dotted path
+git_only = false                           # true: only entries with a `git` source count (a Cargo.toml's dependencies)
+unpinned = { land = "pins a git rev", oco-work = "not known yet: no repository to pin it to" }
+```
+
 A fork and its upstream stay a `[[fork]]` edge. What the clone cannot say (no release tag in it, a topic with no
 release under it, a worktree folder that cannot be read) is `not-known-yet`, which is not drift. Worktrees are read
 with `git worktree list -z` (git 2.36 or later), and only the ones assemble locked are read for changes, without
@@ -306,8 +321,11 @@ followers = ["linux-phone-oco/google-walleye-lab"]
 Its report is `pin.N.follower`, `pin.N.kind` (`tool` or `slice`), `pin.N.name`, `pin.N.file`, `pin.N.pinned`,
 `pin.N.latest`, `pin.N.state` (`current`, `behind`, `bumped`, `branch-exists`, `gated-out`, `refused`), and as it goes
 `pin.N.branch`, `pin.N.pushed`, `pin.N.pr`, `pin.N.gate.exit` and `pin.N.gate.output`, `pin.N.why`,
-`pin.N.moved_by` - or the same as JSON. With `now` it ends 0 when every pin it moves is current or bumped, 1 when
-one was gated out or refused, 2 when it could not run. What installs a bumped pin on a machine (`lpoco-host follow` for
+`pin.N.moved_by` - or the same as JSON. With `now` it ends 0 when every pin it moves is current, bumped (and landed
+with `--land`), or refused only for a standing reason status already reports as drift (`pin-copies`): such a pin is
+still listed, `pin.N.state=refused` with `pin.N.why`, and status and patrol carry it - an hourly unit stays green for
+a known finding. It ends 1 when this run failed at something: a gate that said no (`gated-out`), any other refusal,
+a land, push or pull request that failed, a git or read error for one pin. 2 is "could not run". What installs a bumped pin on a machine (`lpoco-host follow` for
 `lab.toml`'s `lpoco`) is the follower's, not rhizoid's.
 
 ## rhizoid follow

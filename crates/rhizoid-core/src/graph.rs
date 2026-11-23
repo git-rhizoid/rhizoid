@@ -144,6 +144,36 @@ pub struct Graph {
     /// How `bump now` finishes what it moved.
     #[serde(default)]
     pub bump: BumpSettings,
+    /// Tables of pins the graph covers whole: every key an edge, or named unpinned with a why.
+    #[serde(default, rename = "pins")]
+    pub pin_tables: Vec<PinTable>,
+}
+
+/// A follower's table of pins, covered whole (decision 2026-11-23-every-pin-one-pushed-mover (3)): each key is a
+/// `[[tool]]` edge's, or named in `unpinned` with why it is not pinned - a key that is neither is a pin no mover
+/// moves.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinTable {
+    /// The repository whose file it is.
+    pub follower: RepoName,
+    /// The file (TOML).
+    pub file: String,
+    /// The table's dotted path in it (`tools`, `dependencies`).
+    pub table: String,
+    /// Only the entries that name a `git` source count (a Cargo.toml's git dependencies).
+    #[serde(default)]
+    pub git_only: bool,
+    /// The keys that are not pinned, each with why (`land = "pins a git rev"`).
+    #[serde(default)]
+    pub unpinned: BTreeMap<String, String>,
+}
+
+impl PinTable {
+    /// The table's dotted path, its parts (checked when the graph was read).
+    pub fn path(&self) -> Vec<String> {
+        key_path(&self.table).unwrap_or_default()
+    }
 }
 
 /// The graph's `[bump]` table.
@@ -186,6 +216,13 @@ impl Graph {
                 return Err(format!(
                     "{edge}: moved_by names the one job that moves its pins, not nothing"
                 ));
+            }
+        }
+        for p in &graph.pin_tables {
+            key_path(&p.table)
+                .map_err(|e| format!("pins {} {}: table: {e}", p.follower, p.file))?;
+            if let Some((key, _)) = p.unpinned.iter().find(|(_, why)| why.trim().is_empty()) {
+                return Err(format!("pins {} {}: unpinned {key} says no why", p.follower, p.file));
             }
         }
         if graph.bump.land.as_ref().is_some_and(|l| l.is_empty()) {

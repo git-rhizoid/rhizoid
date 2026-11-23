@@ -1,7 +1,8 @@
 //! `rhizoid bump [now]` - every pin of a graph in one place: each tool's and each slice's, what it names and the
 //! newest release. With `now`, each pin that is behind and names `rhizoid-bump` as its mover is bumped on a branch of its follower's clone (gated
 //! when the tool says so), pushed and its pull request opened when asked. Slices are moved by `follow`.
-//! It ends 0 when every pin is current (or, with `now`, every pin it moves bumped), 1 when not, 2 when it could not run.
+//! It ends 0 when every pin is current (or, with `now`, every pin it moves bumped, or refused only for a standing
+//! reason status reports as drift: its tag name copied), 1 when this run failed at something, 2 when it could not run.
 
 use crate::git_cli::{GitCli, Programs};
 use crate::git_repos::GitRepos;
@@ -111,6 +112,9 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
             }
             _ => false,
         },
+        // refused for a standing reason status reports as drift (pin-copies): status and patrol carry it, and a
+        // run that failed at nothing is no failure - an hourly unit stays green for a known finding
+        "refused" => ask.now && !r.pin.copies.is_empty(),
         _ => false,
     }))
 }

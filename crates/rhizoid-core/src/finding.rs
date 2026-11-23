@@ -67,6 +67,8 @@ pub enum Check {
     Recipe,
     /// An assembled worktree against its tag.
     WorktreeTag,
+    /// A table of pins the graph covers whole: every key an edge, or unpinned with a why.
+    PinCoverage,
 }
 
 impl Check {
@@ -90,6 +92,7 @@ impl Check {
             Check::TagOrigin => "tag-origin",
             Check::Recipe => "recipe",
             Check::WorktreeTag => "worktree-tag",
+            Check::PinCoverage => "pin-coverage",
         }
     }
 }

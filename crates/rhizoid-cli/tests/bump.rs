@@ -512,7 +512,11 @@ fn a_pin_whose_tag_name_is_written_twice_is_named_and_refused() {
     assert!(value(&out, "pin.2.why").unwrap().contains(".github/ci.yml:2"));
     assert_eq!(value(&out, "pin.1.state").as_deref(), Some("bumped"), "the other pins still move");
     assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/bump/lpoco-attended*"]), "");
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "refused for a standing finding status carries: no failure"
+    );
 
     let status = Command::new(bin())
         .args(["status", "--graph"])
@@ -640,4 +644,18 @@ fn thousands_of_marked_records_are_read_without_a_stall() {
     let out = w.bump(&[]);
     assert_eq!(value(&out, "pin.2.copies"), None, "{out:?}");
     assert_eq!(value(&out, "pin.2.state").as_deref(), Some("behind"));
+}
+
+#[test]
+fn a_standing_refusal_beside_a_failing_gate_still_ends_1() {
+    let w = world(r#"["sh", "-c", "exit 4"]"#);
+    std::fs::write(w.lab.join("ci.yml"), "uses: lpoco-v1.0.0\n").unwrap();
+    git(&w.lab, &["add", "-A"]);
+    git(&w.lab, &["commit", "-q", "-m", "a second copy"]);
+    git(&w.lab, &["push", "-q", "origin", "main"]);
+    git(&w.lab, &["fetch", "-q"]);
+    let out = w.bump(&["now"]);
+    assert_eq!(value(&out, "pin.1.state").as_deref(), Some("refused"));
+    assert_eq!(value(&out, "pin.2.state").as_deref(), Some("gated-out"));
+    assert_eq!(out.status.code(), Some(1), "the gate failed in this run: {out:?}");
 }
