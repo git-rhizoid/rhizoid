@@ -68,15 +68,20 @@ fn world(gate: &str) -> World {
     let tools = root.join("acme/tools");
     repo(&tools, &[("a", "1")], &["lpoco-v1.0.0", "lpoco-attended-v0.1.0"]);
     repo(&tools, &[("a", "2")], &["lpoco-v1.1.0", "lpoco-attended-v0.2.0"]);
-    repo(&root.join("acme/kb"), &[("t", "1")], &["v0.1.0"]);
-    repo(&root.join("acme/kb"), &[("t", "2")], &["v0.2.0"]);
+    repo(
+        &root.join("acme/kb"),
+        &[("generic", "queries/k.sql\n"), ("queries/k.sql", "-- k v1\n")],
+        &["v0.1.0"],
+    );
+    repo(&root.join("acme/kb"), &[("queries/k.sql", "-- k v2\n")], &["v0.2.0"]);
     let seed = root.join("seed");
     repo(
         &seed,
         &[
             ("lab.toml", "# the lab\n[tools]\nlpoco = \"1.0.0\"\nother = \"1.0.0-x\"\n"),
             ("steps/Cargo.toml", CARGO),
-            ("idealkb.toml", "version = \"0.1.0\"\n"),
+            ("idealkb.toml", "source = \"acme/kb\"\nversion = \"0.1.0\"\nown = []\n"),
+            ("queries/k.sql", "-- k v1\n"),
         ],
         &[],
     );
@@ -157,7 +162,6 @@ fn every_pin_is_listed_in_one_place_and_nothing_changes() {
     assert_eq!(value(&out, "pin.1.state").as_deref(), Some("behind"));
     assert_eq!(value(&out, "pin.2.pinned").as_deref(), Some("0.1.0"), "the Cargo tag's version");
     assert_eq!(value(&out, "pin.3.kind").as_deref(), Some("slice"));
-    assert_eq!(value(&out, "pin.3.moved_by").as_deref(), Some("follow"));
     assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/*"]), "");
 }
 
@@ -170,7 +174,15 @@ fn now_bumps_each_tool_pin_on_a_branch_with_only_its_value_changed() {
     assert_eq!(value(&out, "pin.1.branch").as_deref(), Some("rhizoid/bump/lpoco-1.1.0"));
     assert_eq!(value(&out, "pin.1.pushed").as_deref(), Some("no"));
     assert_eq!(value(&out, "pin.2.state").as_deref(), Some("bumped"), "the gate passed");
-    assert_eq!(value(&out, "pin.3.state").as_deref(), Some("behind"), "a slice is follow's");
+    assert_eq!(value(&out, "pin.3.state").as_deref(), Some("bumped"), "a slice, through follow");
+    assert_eq!(value(&out, "pin.3.branch").as_deref(), Some("rhizoid/bump/kb-0.2.0"));
+    assert_eq!(git(&w.lab, &["show", "rhizoid/bump/kb-0.2.0:queries/k.sql"]), "-- k v2");
+    assert!(git(&w.lab, &["show", "rhizoid/bump/kb-0.2.0:idealkb.toml"])
+        .contains("version = \"0.2.0\""));
+    assert_eq!(
+        git(&w.lab, &["log", "-1", "--format=%s", "rhizoid/bump/kb-0.2.0"]),
+        "chore(deps): follow acme/kb 0.1.0 -> 0.2.0"
+    );
     assert_eq!(
         git(&w.lab, &["show", "rhizoid/bump/lpoco-1.1.0:lab.toml"]),
         "# the lab\n[tools]\nlpoco = \"1.1.0\"\nother = \"1.0.0-x\""
@@ -317,4 +329,34 @@ fn what_the_gate_may_change_is_committed_with_the_pin() {
     let files =
         git(&w.lab, &["diff", "--name-only", "origin/main", "rhizoid/bump/lpoco-attended-0.2.0"]);
     assert_eq!(files, "steps/Cargo.lock\nsteps/Cargo.toml");
+}
+
+#[test]
+fn a_follower_that_changed_a_generic_file_is_left_for_a_hand() {
+    let w = world(PASSING_GATE);
+    std::fs::write(w.lab.join("queries/k.sql"), "-- k, changed by the lab\n").unwrap();
+    git(&w.lab, &["commit", "-q", "-am", "the lab's own k"]);
+    git(&w.lab, &["push", "-q", "origin", "main"]);
+    git(&w.lab, &["fetch", "-q"]);
+    let out = w.bump(&["now", "--only", "acme/lab"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(value(&out, "pin.3.state").as_deref(), Some("refused"));
+    assert!(value(&out, "pin.3.why").unwrap().contains("changed a generic file"), "{out:?}");
+    assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/bump/kb*"]), "");
+}
+
+#[test]
+fn a_slice_gate_that_fails_commits_nothing() {
+    let w = world(PASSING_GATE);
+    let graph = std::fs::read_to_string(&w.graph).unwrap();
+    std::fs::write(
+        &w.graph,
+        graph
+            .replace("marker = \"kb\"\n", "marker = \"kb\"\ngate = [\"sh\", \"-c\", \"exit 6\"]\n"),
+    )
+    .unwrap();
+    let out = w.bump(&["now", "--only", "acme/lab"]);
+    assert_eq!(value(&out, "pin.3.state").as_deref(), Some("gated-out"), "{out:?}");
+    assert_eq!(value(&out, "pin.3.gate.exit").as_deref(), Some("6"));
+    assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/bump/kb*"]), "");
 }

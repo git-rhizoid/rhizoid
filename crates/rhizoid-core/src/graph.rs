@@ -173,6 +173,9 @@ pub struct Slice {
     /// The follower's file of upstream items, which say a changed own file is on its way up.
     #[serde(default = "default_items")]
     pub items: String,
+    /// A command a bump must pass before it is committed (argv, run in the follower's worktree once laid).
+    #[serde(default)]
+    pub gate: Option<Vec<String>>,
     /// The repositories that follow.
     pub followers: Vec<RepoName>,
 }

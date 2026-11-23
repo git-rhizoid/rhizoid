@@ -234,14 +234,17 @@ conflict or a failed check, 2 when it could not run.
 rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--fetch] [--push] [--pr] [--json]
 ```
 
-Every pin of a graph in one place: each `[[tool]]` and `[[slice]]` follower, the file and value that pins it, and the
+Every pin of a graph in one place - each pin where its own reader reads it, listed here together: each `[[tool]]` and `[[slice]]` follower, the file and value that pins it, and the
 newest release of its source. Without `now` it lists them and changes nothing (it ends 1 when one is behind). With
 `now`, each tool pin that is behind is bumped in its follower's clone: a branch `rhizoid/bump/TOOL-VERSION` from the
 graph's revision, in a fresh worktree; only the pinned value edited, the rest of the file as it was, and the edit read
 back before it is committed (a value that appears twice, or does not read back, is `refused`, left to a hand); the
 tool's `gate`, when it has one, passed before the commit (`gated-out` commits nothing); `--push` pushes the branch to
 the follower's `origin`, `--pr` also opens its pull request (`gh pr create --fill`). A branch already there is
-`branch-exists`. Slices are moved by `follow`, which lays their files: `bump` lists them, `moved_by=follow`. The
+`branch-exists`. A slice pin that is behind is moved through `follow` the same way: a branch
+`rhizoid/bump/SOURCE-VERSION`, the release laid into the fresh worktree as idealkb's follow.sh lays it (the pin moved
+with it), the slice's `gate` passed, and every file follow laid committed; a follower that changed a generic file
+(follow's 3) is `refused` - left for a hand, as update-pins leaves it. The
 follower's own checkout is never touched, and the worktree always goes. The commit is the pin and the files the tool names in `also`: a gate that changes any other
 file is refused (`refused`, with why), and a bump commit is never signed. `--fetch` fetches each clone first, and a
 branch already on `origin` counts as `branch-exists`. When the pull request command fails after the push, the branch
