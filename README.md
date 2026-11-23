@@ -13,6 +13,18 @@ tool pins on branches; follow lays a slice as idealkb's follow.sh does; `add`, `
 take and keep cuttings, recorded in the graph. The rest of the repo is
 the devenv and CI/release scaffolding (from [rustnix](https://github.com/grenudi/rustnix)).
 
+## rhizoid check
+
+```
+rhizoid check [--graph FILE]
+```
+
+Whether this rhizoid can read a graph file: every edge parsed and checked as status and bump read it (`moved_by`,
+`[[pins]]`, `[bump]` included), with no clones and no network. It ends 0 and prints `readable=yes` and how many edges
+of each kind the graph holds; it ends 2 when this version cannot read it, naming a field it does not know. Unknown
+fields are refused, never ignored: an old rhizoid that skipped one could move a pin it does not own. A follower's CI
+runs it with the rhizoid version its host pins (`lab.toml`), so a graph never lands ahead of the host.
+
 ## rhizoid status
 
 ```
