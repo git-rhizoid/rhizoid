@@ -617,6 +617,90 @@ fn gated(
     }))
 }
 
+/// How much of a gate's output a draft's body holds, in bytes: GitHub takes a body of 65536 characters, and the
+/// rest of the body is a few lines.
+const BODY_OUTPUT: usize = 60_000;
+
+/// The lines a gate printed, as a terminal shows them: a carriage return starts its line over (a progress bar
+/// keeps its last state), and a NUL is dropped.
+pub fn shown_lines(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(|l| l.rsplit('\r').find(|s| !s.is_empty()).unwrap_or("").replace('\0', ""))
+        .collect()
+}
+
+/// A gate's output for a pull request's body, indented as a code block (no fence or line break its output could
+/// slip past). All of it when it fits in `budget` bytes; else its head and its tail - the tail the larger, where
+/// cargo's failing tests, panics and summary come - and how many lines were left out between, each line kept then
+/// cut at 2000 characters and marked so.
+fn gate_excerpt(output: &str, budget: usize) -> String {
+    let whole: Vec<String> = shown_lines(output).iter().map(|l| format!("    {l}")).collect();
+    let size = |ls: &[String]| ls.iter().map(|l| l.len() + 1).sum::<usize>();
+    if size(&whole) <= budget {
+        return whole.join("\n");
+    }
+    let lines: Vec<String> = whole
+        .into_iter()
+        .map(|l| match l.char_indices().nth(2000) {
+            Some((at, _)) => {
+                format!("{} [... {} characters cut]", &l[..at], l[at..].chars().count())
+            }
+            None => l,
+        })
+        .collect();
+    let (mut tail_from, mut used) = (lines.len(), 0);
+    while tail_from > 0 && used + lines[tail_from - 1].len() < budget * 2 / 3 {
+        tail_from -= 1;
+        used += lines[tail_from].len() + 1;
+    }
+    let (mut head_to, mut used) = (0, 0);
+    while head_to < tail_from && used + lines[head_to].len() < (budget / 3).saturating_sub(100) {
+        used += lines[head_to].len() + 1;
+        head_to += 1;
+    }
+    format!(
+        "{}\n\n[... {} lines left out ...]\n\n{}",
+        lines[..head_to].join("\n"),
+        tail_from - head_to,
+        lines[tail_from..].join("\n")
+    )
+}
+
+#[cfg(test)]
+mod excerpt_tests {
+    use super::gate_excerpt;
+
+    #[test]
+    fn a_short_output_is_whole_and_a_long_one_keeps_its_head_and_tail() {
+        assert_eq!(gate_excerpt("a\nb", 1000), "    a\n    b");
+        let long: Vec<String> = (1..=10_000).map(|n| format!("line {n}")).collect();
+        let cut = gate_excerpt(&long.join("\n"), 6_000);
+        assert!(cut.len() <= 6_000, "{}", cut.len());
+        assert!(cut.starts_with("    line 1\n    line 2\n"), "the head");
+        assert!(cut.ends_with("    line 9999\n    line 10000"), "the tail");
+        let left: usize =
+            cut.split("[... ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
+        let kept = cut.lines().filter(|l| l.starts_with("    line ")).count();
+        assert_eq!(left + kept, 10_000, "every line kept or counted");
+    }
+
+    #[test]
+    fn a_carriage_return_a_huge_line_and_a_small_budget_stay_in_bounds() {
+        assert_eq!(gate_excerpt("10%\r50%\r100%\ndone\r\n", 1000), "    100%\n    done");
+        let huge = format!("{}\nend", "'".repeat(9000));
+        assert_eq!(gate_excerpt(&huge, 20_000).len(), 9000 + 4 + 8, "whole when it fits");
+        let cut = gate_excerpt(&format!("{huge}\n{huge}\n{huge}"), 6_000);
+        assert!(cut.contains("characters cut]") && cut.len() <= 6_000, "{}", cut.len());
+        let wide = "'é' ".repeat(5000);
+        assert!(gate_excerpt(&format!("{wide}\n{wide}\n{wide}"), 6_000).len() <= 6_000);
+        assert!(
+            gate_excerpt(&"x\n".repeat(1000), 50).len() < 200,
+            "a budget under 300 never wraps"
+        );
+    }
+}
+
 /// A gate that failed: its argv and the gated-out outcome it gave.
 struct Failed<'a> {
     gate: &'a [String],
@@ -624,7 +708,7 @@ struct Failed<'a> {
 }
 
 /// A bump whose gate failed, when a pull request is asked for: committed on its branch, pushed, and opened as a
-/// draft carrying the gate's argv, exit and the tail of its output, so the people of the follower see the one
+/// draft carrying the gate's argv, exit and what it printed (head and tail when it is long), so the people of the follower see the one
 /// check that failed. Never landed. Without a draft command, nothing is committed.
 #[allow(clippy::too_many_arguments)]
 fn draft_gated(
@@ -642,20 +726,13 @@ fn draft_gated(
     };
     git.commit_files(worktree, files, message)?;
     git.push(worktree, branch)?;
-    // the last 40 lines, each cut at 400 characters and indented as a code block: no fence its output could close,
-    // no NUL, and a body well under an argument's size
-    let lines: Vec<&str> = output.lines().collect();
-    let tail = lines[lines.len().saturating_sub(40)..]
-        .iter()
-        .map(|l| format!("    {}", l.replace('\0', "").chars().take(400).collect::<String>()))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let printed = gate_excerpt(output, BODY_OUTPUT);
     let code = exit.map_or("a signal".to_string(), |c| c.to_string());
     let body = format!(
         "rhizoid bump moved this pin, and its gate failed, so it is not landed: a person looks at it.\n\n\
-         Gate: `{}`\nExit: {code}\n\nThe last lines it printed:\n\n{tail}\n\n\
+         Gate: `{}`\nExit: {code}\n\nWhat it printed:\n\n{printed}\n\n\
          Only the pin and the files committed with it are here; anything else the gate changed is not.\n",
-        failed.gate.join(" ")
+        failed.gate.join(" ").chars().take(1000).collect::<String>()
     );
     let title = format!("{message} (its gate failed)");
     let argv: Vec<String> = command
