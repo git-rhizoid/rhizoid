@@ -286,7 +286,8 @@ attribute is read at the graph's revision (`git check-attr --source`, git 2.40 o
 graph's revision, in a fresh worktree; only the pinned value edited, the rest of the file as it was, and the edit read
 back before it is committed (a value that appears twice, or does not read back, is `refused`, left to a hand); the
 tool's `gate`, when it has one, passed before the commit (`gated-out`: nothing committed - but with `--pr` or `--land` the failed bump is committed on
-its branch, pushed and opened as a draft pull request carrying the gate's argv, exit and the last lines it printed,
+its branch, pushed and opened as a draft pull request carrying the gate's argv, exit and what it printed (all of it, or its
+head and tail and how many lines were left out between when GitHub's body limit cuts),
 never landed, so the follower's people see the one check that failed; a later run says `branch-exists` and opens
 nothing, and a newer release's pull request for the same pin closes the earlier one with a comment naming it,
 `pin.N.replaced`; one it could not close ends the run 1 with `pin.N.replace_error`, and a branch pushed whose pull
@@ -337,7 +338,7 @@ followers = ["linux-phone-oco/google-walleye-lab"]
 
 Its report is `pin.N.follower`, `pin.N.kind` (`tool` or `slice`), `pin.N.name`, `pin.N.file`, `pin.N.pinned`,
 `pin.N.latest`, `pin.N.state` (`current`, `behind`, `bumped`, `branch-exists`, `gated-out`, `refused`), and as it goes
-`pin.N.branch`, `pin.N.pushed`, `pin.N.pr`, `pin.N.gate.exit` and `pin.N.gate.output`, `pin.N.why`,
+`pin.N.branch`, `pin.N.pushed`, `pin.N.pr`, `pin.N.gate.exit` and `pin.N.gate.output` (all of it: the key repeated, one line each, in order), `pin.N.why`,
 `pin.N.moved_by` - or the same as JSON. With `now` it ends 0 when every pin it moves is current, bumped (and landed
 with `--land`), or refused only for a standing reason status already reports as drift (`pin-copies`): such a pin is
 still listed, `pin.N.state=refused` with `pin.N.why`, and status and patrol carry it - an hourly unit stays green for

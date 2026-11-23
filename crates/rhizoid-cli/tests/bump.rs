@@ -756,3 +756,29 @@ fn a_failed_gate_without_a_pull_request_commits_nothing_still() {
     assert_eq!(value(&out, "pin.2.branch"), None);
     assert_eq!(git(&w.bare, &["branch", "--list", "rhizoid/bump/lpoco-attended*"]), "");
 }
+
+#[test]
+fn a_gate_that_says_more_than_a_body_holds_is_kept_whole_in_the_report_and_cut_in_the_draft() {
+    // 20000 lines, about 600 KB: far past GitHub's body limit
+    let w = world(
+        r#"["sh", "-c", "seq -f 'test gate line %g of a long cargo test run, with its noise' 1 20000; exit 101"]"#,
+    );
+    let path = fake_gh(&w);
+    let out = bump_with_path(&w, &path, &["--pr", "--only", "acme/lab"]);
+    assert_eq!(value(&out, "pin.2.state").as_deref(), Some("gated-out"));
+    let report = String::from_utf8_lossy(&out.stdout);
+    let kept = report.lines().filter(|l| l.starts_with("pin.2.gate.output=")).count();
+    assert_eq!(kept, 20000, "the report holds all of it");
+    assert!(report.contains("pin.2.gate.output=test gate line 20000 of"), "its last line too");
+
+    let said = std::fs::read_to_string(w.root.join("gh.log")).unwrap();
+    let draft = &said[said.find("pr create --draft").expect("a draft")..];
+    let body = &draft[draft.find("rhizoid bump moved this pin").unwrap()..];
+    assert!(body.len() < 65_536, "under GitHub's limit: {}", body.len());
+    assert!(body.contains("    test gate line 1 of"), "the head");
+    assert!(body.contains("    test gate line 20000 of"), "the tail");
+    let left: usize =
+        body.split("[... ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
+    let shown = body.lines().filter(|l| l.starts_with("    test gate line ")).count();
+    assert_eq!(left + shown, 20000, "every line shown or counted");
+}

@@ -231,7 +231,13 @@ fn render(rows: &[Row], json: bool) -> String {
             Some(Bumped::BranchExists { branch }) => put(k("branch"), branch),
             Some(Bumped::GatedOut { exit, output, branch, pr, pr_error }) => {
                 put(k("gate.exit"), &exit.map_or("signal".to_string(), |e| e.to_string()));
-                put(k("gate.output"), output.lines().last().unwrap_or(""));
+                // all of it, a line each, so the journal holds what the gate said
+                if output.is_empty() {
+                    put(k("gate.output"), "");
+                }
+                for line in rhizoid_core::pins::shown_lines(output) {
+                    put(k("gate.output"), &line);
+                }
                 if let Some(branch) = branch {
                     put(k("branch"), branch);
                     put(k("pushed"), "yes");
