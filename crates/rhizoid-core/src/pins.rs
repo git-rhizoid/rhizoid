@@ -65,7 +65,7 @@ pub fn edit_pin(tool: &Tool, text: &str, old: &str, new: &str) -> Result<String,
             let hits: Vec<usize> = text
                 .lines()
                 .enumerate()
-                .filter(|(_, l)| quoted.iter().any(|q| l.contains(q.as_str())))
+                .filter(|(_, l)| quoted.iter().any(|q| code_part(l).contains(q.as_str())))
                 .map(|(i, _)| i)
                 .collect();
             let [at] = hits.as_slice() else {
@@ -96,19 +96,58 @@ pub fn edit_pin(tool: &Tool, text: &str, old: &str, new: &str) -> Result<String,
             replace_line(text, *at, |_| to.clone())
         }
     };
-    match read_pin(tool, &follower, &edited) {
-        Ok(Some(v)) if v == new => Ok(edited),
-        _ => Err(format!("{}: the edit did not read back as {new}: move it by hand", tool.pin)),
+    let read_back = matches!(read_pin(tool, &follower, &edited), Ok(Some(v)) if v == new);
+    if !read_back || !only_the_key_moved(tool, text, &edited, &to) {
+        return Err(format!(
+            "{}: the edit did not read back as {new} alone: move it by hand",
+            tool.pin
+        ));
     }
+    Ok(edited)
+}
+
+/// For a key pin, the edited file parses as the original with that one key set to `to`: nothing else moved.
+fn only_the_key_moved(tool: &Tool, original: &str, edited: &str, to: &str) -> bool {
+    let PinRead::Key(path) = &tool.read else { return true };
+    let (Ok(mut want), Ok(got)) = (original.parse::<toml::Table>(), edited.parse::<toml::Table>())
+    else {
+        return false;
+    };
+    let mut at: &mut toml::Table = &mut want;
+    for k in &path[..path.len() - 1] {
+        match at.get_mut(k) {
+            Some(toml::Value::Table(t)) => at = t,
+            _ => return false,
+        }
+    }
+    at.insert(path[path.len() - 1].clone(), toml::Value::String(to.to_string()));
+    want == got
+}
+
+/// A TOML line without its comment: cut at the first `#` outside quotes.
+fn code_part(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (i, c) in line.char_indices() {
+        match (quote, c) {
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, '#') => return &line[..i],
+            _ => {}
+        }
+    }
+    line
 }
 
 fn replace_line(text: &str, at: usize, f: impl Fn(&str) -> String) -> String {
     let mut out = String::with_capacity(text.len() + 8);
     for (i, line) in text.split_inclusive('\n').enumerate() {
         if i == at {
-            let (body, end) = match line.strip_suffix('\n') {
-                Some(b) => (b, "\n"),
-                None => (line, ""),
+            let (body, end) = match line.strip_suffix("\r\n") {
+                Some(b) => (b, "\r\n"),
+                None => match line.strip_suffix('\n') {
+                    Some(b) => (b, "\n"),
+                    None => (line, ""),
+                },
             };
             out.push_str(&f(body));
             out.push_str(end);
@@ -213,6 +252,8 @@ pub enum Bumped {
         pushed: bool,
         /// What the pull request command printed (its address).
         pr: Option<String>,
+        /// The pull request command failed, the branch pushed: open it by hand.
+        pr_error: Option<String>,
     },
     /// Its branch exists already: an earlier bump, not merged yet.
     BranchExists {
@@ -245,7 +286,8 @@ pub fn bump(
 ) -> Result<Bumped, crate::PortError> {
     let old = pin.pinned.clone().unwrap_or_default();
     let branch = format!("rhizoid/bump/{}-{}", tool.name, pin.latest);
-    if git.commit(&format!("refs/heads/{branch}"))?.is_some() {
+    let here = git.commit(&format!("refs/heads/{branch}"))?.is_some();
+    if here || git.commit(&format!("refs/remotes/origin/{branch}"))?.is_some() {
         return Ok(Bumped::BranchExists { branch });
     }
     let base = git.commit(at.rev)?.ok_or_else(|| {
@@ -256,6 +298,7 @@ pub fn bump(
     let outcome = edit_gate_commit(git, cmd, tool, pin, at, &worktree, &branch, &old);
     let _ = git.remove_worktree(&worktree);
     match outcome {
+        // once committed, the branch is kept: pushed or not, it is the bump
         Ok(b @ Bumped::Bumped { .. }) => Ok(b),
         Ok(other) => {
             git.delete_branch(&branch)?;
@@ -305,23 +348,33 @@ fn edit_gate_commit(
             return Ok(Bumped::GatedOut { exit, output: format!("{stdout}{stderr}") });
         }
     }
+    // the commit is the pin alone: a gate that changed anything else is refused, not swept in
+    let others: Vec<String> =
+        git.changed_files(worktree)?.into_iter().filter(|f| *f != pin.file).collect();
+    if !others.is_empty() {
+        return Ok(Bumped::Refused {
+            why: format!("the bump changed more than the pin: {}", others.join(", ")),
+        });
+    }
     git.commit_all(worktree, &format!("chore(deps): {} {old} -> {}", tool.name, pin.latest))?;
-    let mut pr = None;
-    if at.push || at.pr.is_some() {
+    let pushed = at.push || at.pr.is_some();
+    let mut bumped =
+        Bumped::Bumped { branch: branch.to_string(), pushed: false, pr: None, pr_error: None };
+    if pushed {
         git.push(worktree, branch)?;
+        bumped =
+            Bumped::Bumped { branch: branch.to_string(), pushed: true, pr: None, pr_error: None };
     }
     if let Some(command) = at.pr {
         let argv: Vec<String> = command.iter().map(|a| a.replace("{branch}", branch)).collect();
-        let (exit, stdout, stderr) = cmd.run(&argv, worktree)?;
-        if exit != Some(0) {
-            return Err(crate::PortError(format!(
-                "{branch} is pushed, and the pull request command failed: {}",
-                format!("{stdout}{stderr}").trim()
-            )));
-        }
-        pr = Some(stdout.trim().to_string());
+        let (pr, pr_error) = match cmd.run(&argv, worktree) {
+            Ok((Some(0), stdout, _)) => (Some(stdout.trim().to_string()), None),
+            Ok((_, stdout, stderr)) => (None, Some(format!("{stdout}{stderr}").trim().to_string())),
+            Err(e) => (None, Some(e.0)),
+        };
+        bumped = Bumped::Bumped { branch: branch.to_string(), pushed: true, pr, pr_error };
     }
-    Ok(Bumped::Bumped { branch: branch.to_string(), pushed: at.push || at.pr.is_some(), pr })
+    Ok(bumped)
 }
 
 #[cfg(test)]
@@ -369,6 +422,29 @@ mod tests {
         assert_eq!(
             edit_pin(&t, text, "0.7.1", "0.8.0").unwrap(),
             "#!/bin/sh\nversion=\"${V:-0.8.0}\"\necho $version\n"
+        );
+    }
+
+    #[test]
+    fn a_comment_or_crlf_does_not_get_in_the_way() {
+        let t = tool("pin = \"lab.toml\"\nkey = \"tools.lpoco\"\n");
+        let text = "[tools]\n# was \"0.42.2\" before\r\nlpoco = \"0.42.2\"\r\n";
+        assert_eq!(
+            edit_pin(&t, text, "0.42.2", "0.43.0").unwrap(),
+            "[tools]\n# was \"0.42.2\" before\r\nlpoco = \"0.43.0\"\r\n"
+        );
+        let line = tool("pin = \"i.sh\"\nline = \"v={version}\"\n");
+        assert_eq!(edit_pin(&line, "a\r\nv=1\r\nb\r\n", "1", "2").unwrap(), "a\r\nv=2\r\nb\r\n");
+    }
+
+    #[test]
+    fn an_edit_that_moves_another_key_too_is_refused() {
+        let t = tool("pin = \"C.toml\"\nkey = \"d.x.tag\"\nvalue = \"x-v{version}\"\n");
+        let text = "[d]\nx = { tag = \"x-v1\", rev = \"x-v1\" }\n";
+        let moved = edit_pin(&t, text, "1", "2").unwrap();
+        assert!(
+            moved.contains("tag = \"x-v2\"") && moved.contains("rev = \"x-v1\""),
+            "only the key: {moved}"
         );
     }
 

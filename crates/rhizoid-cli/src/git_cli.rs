@@ -221,7 +221,14 @@ impl GitPort for GitCli {
     }
 
     fn commit_all(&self, path: &Path, message: &str) -> Result<(), PortError> {
-        self.ok_in(path, &["commit", "-q", "-a", "-m", message]).map(drop)
+        // never signed: a bump is a branch for review, and a signing prompt would stop it
+        self.ok_in(path, &["-c", "commit.gpgSign=false", "commit", "-q", "-a", "-m", message])
+            .map(drop)
+    }
+
+    fn changed_files(&self, path: &Path) -> Result<Vec<String>, PortError> {
+        let out = self.ok_in(path, &["status", "--porcelain", "-z", "--untracked-files=all"])?;
+        Ok(out.split('\0').filter(|e| e.len() > 3).map(|e| e[3..].to_string()).collect())
     }
 
     fn push(&self, path: &Path, branch: &str) -> Result<(), PortError> {

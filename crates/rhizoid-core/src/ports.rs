@@ -113,6 +113,9 @@ pub trait GitPort {
     /// Commit every tracked change in the worktree at `path` with `message`.
     fn commit_all(&self, path: &std::path::Path, message: &str) -> Result<(), PortError>;
 
+    /// The paths changed in the worktree at `path`, tracked or not (`git status --porcelain`).
+    fn changed_files(&self, path: &std::path::Path) -> Result<Vec<String>, PortError>;
+
     /// Push `branch` from the worktree at `path` to `origin`, never forced.
     fn push(&self, path: &std::path::Path, branch: &str) -> Result<(), PortError>;
 

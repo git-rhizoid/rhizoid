@@ -247,3 +247,57 @@ fn a_value_that_is_not_certain_is_left_to_a_hand() {
     assert!(value(&out, "pin.1.why").unwrap().contains("2 times"), "{out:?}");
     assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/bump/lpoco-1*"]), "");
 }
+
+#[test]
+fn a_gate_that_changes_more_than_the_pin_is_refused() {
+    let w =
+        world(r#"["sh", "-c", "echo built >> lab.toml.lock && echo more >> steps/Cargo.toml"]"#);
+    let out = w.bump(&["now"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(value(&out, "pin.2.state").as_deref(), Some("refused"));
+    assert!(value(&out, "pin.2.why").unwrap().contains("lab.toml.lock"), "{out:?}");
+    assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/bump/lpoco-attended*"]), "");
+}
+
+#[test]
+fn pushing_needs_now_and_only_must_name_a_follower() {
+    let w = world(PASSING_GATE);
+    let out = w.bump(&["--push"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("go with `bump now`"), "{out:?}");
+    let out = w.bump(&["now", "--only", "acme/lsb"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no pin of the graph"), "{out:?}");
+    assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/*"]), "");
+}
+
+#[test]
+fn a_failed_pull_request_keeps_the_pushed_branch_and_says_so() {
+    let w = world(PASSING_GATE);
+    let fake = w.root.join("fakebin");
+    std::fs::create_dir_all(&fake).unwrap();
+    std::fs::write(fake.join("gh"), "#!/bin/sh\necho 'gh: not logged in' >&2\nexit 4\n").unwrap();
+    let ok = Command::new("chmod").arg("+x").arg(fake.join("gh")).status().unwrap();
+    assert!(ok.success());
+    let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
+    let out = Command::new(bin())
+        .args(["bump", "now", "--pr", "--only", "acme/lab", "--graph"])
+        .arg(&w.graph)
+        .arg("--root")
+        .arg(&w.root)
+        .env("AGENT_WORKTREES", w.root.join("worktrees"))
+        .env("PATH", path)
+        .envs(IDENTITY)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(value(&out, "pin.1.pushed").as_deref(), Some("yes"));
+    assert_eq!(value(&out, "pin.1.pr_error").as_deref(), Some("gh: not logged in"));
+    assert!(
+        git(&w.lab, &["branch", "--list", "rhizoid/*"]).contains("rhizoid/bump/lpoco-1.1.0"),
+        "kept"
+    );
+    assert!(git(&w.bare, &["branch", "--list", "rhizoid/*"]).contains("rhizoid/bump/lpoco-1.1.0"));
+    let again = w.bump(&["now", "--only", "acme/lab"]);
+    assert_eq!(value(&again, "pin.1.state").as_deref(), Some("branch-exists"));
+}

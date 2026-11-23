@@ -181,6 +181,7 @@ fn request(r: &Resolution) -> Result<Request, String> {
             push: Contract::PUSH.get_from(r).unwrap_or(false),
             pr: Contract::PR.get_from(r).unwrap_or(false),
             only: Contract::ONLY.get_from(r).filter(|s| !s.is_empty()),
+            fetch: Contract::FETCH.get_from(r).unwrap_or(false),
             json: Contract::JSON.get_from(r).unwrap_or(false),
         }),
         Command::SendBack => Request::SendBack(commands::send_back::Ask {

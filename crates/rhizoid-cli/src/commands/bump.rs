@@ -18,6 +18,7 @@ pub struct Ask {
     pub push: bool,
     pub pr: bool,
     pub only: Option<String>,
+    pub fetch: bool,
     pub json: bool,
 }
 
@@ -32,54 +33,80 @@ struct Row {
     state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     bump: Option<Bumped>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 /// Print every pin; whether all is as asked.
 pub fn run(ask: &Ask) -> Result<bool, String> {
+    if !ask.now && (ask.push || ask.pr) {
+        return Err(
+            "--push and --pr change followers' remotes: they go with `bump now`".to_string()
+        );
+    }
     let text = std::fs::read_to_string(&ask.graph)
         .map_err(|e| format!("cannot read the graph file {}: {e}", ask.graph.display()))?;
     let graph = Graph::parse(&text).map_err(|e| format!("{}: {e}", ask.graph.display()))?;
-    let repos = GitRepos::new(&ask.root, &graph, false);
+    let repos = GitRepos::new(&ask.root, &graph, ask.fetch);
     let pins: Vec<Pin> = plan(&graph, &repos)
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|p| ask.only.as_deref().map_or(true, |o| p.follower.as_str() == o))
         .collect();
-    let pr: Vec<String> = PR.iter().map(|s| s.to_string()).collect();
+    if let (Some(only), true) = (&ask.only, pins.is_empty()) {
+        return Err(format!("--only {only}: no pin of the graph is that follower's"));
+    }
     let mut rows = Vec::new();
     for pin in pins {
-        let mut row =
-            Row { state: if pin.current() { "current" } else { "behind" }, bump: None, pin };
+        let mut row = Row {
+            state: if pin.current() { "current" } else { "behind" },
+            bump: None,
+            error: None,
+            pin,
+        };
         if ask.now && row.pin.kind == Kind::Tool && !row.pin.current() {
-            let tool = &graph.tools[row.pin.tool.expect("a tool pin names its tool")];
-            let clone = ask.root.join(graph.clone_path(&row.pin.follower));
-            let git = GitCli::new(&clone);
-            let main = git.main_clone().map_err(|e| format!("{}: {e}", row.pin.follower))?;
-            let home = crate::commands::assemble::rhizoid_home(&ask.worktrees, &main)?;
-            let at = BumpAt {
-                rev: &graph.rev,
-                home: &home,
-                push: ask.push,
-                pr: ask.pr.then_some(pr.as_slice()),
-            };
-            let outcome = bump(&git, &Programs, tool, &row.pin, &at)
-                .map_err(|e| format!("{}: {e}", row.pin.follower))?;
-            row.state = match &outcome {
-                Bumped::Bumped { .. } => "bumped",
-                Bumped::BranchExists { .. } => "branch-exists",
-                Bumped::GatedOut { .. } => "gated-out",
-                Bumped::Refused { .. } => "refused",
-            };
-            row.bump = Some(outcome);
+            // one pin's failure is its own: the others are still bumped, and every one is reported
+            match bump_one(ask, &graph, &row.pin) {
+                Ok(outcome) => {
+                    row.state = match &outcome {
+                        Bumped::Bumped { .. } => "bumped",
+                        Bumped::BranchExists { .. } => "branch-exists",
+                        Bumped::GatedOut { .. } => "gated-out",
+                        Bumped::Refused { .. } => "refused",
+                    };
+                    row.bump = Some(outcome);
+                }
+                Err(e) => {
+                    row.state = "error";
+                    row.error = Some(e);
+                }
+            }
         }
         rows.push(row);
     }
     crate::commands::status::write_report(&mut std::io::stdout().lock(), &render(&rows, ask.json))?;
     Ok(rows.iter().all(|r| match r.state {
-        "current" | "bumped" | "branch-exists" => true,
+        "current" | "branch-exists" => true,
+        "bumped" => !matches!(&r.bump, Some(Bumped::Bumped { pr_error: Some(_), .. })),
         "behind" => ask.now && r.pin.kind == Kind::Slice,
         _ => false,
     }))
+}
+
+fn bump_one(ask: &Ask, graph: &Graph, pin: &Pin) -> Result<Bumped, String> {
+    let tool = &graph.tools[pin.tool.expect("a tool pin names its tool")];
+    let clone = ask.root.join(graph.clone_path(&pin.follower));
+    let git = GitCli::new(&clone);
+    let main = git.main_clone().map_err(|e| e.to_string())?;
+    let home = crate::commands::assemble::rhizoid_home(&ask.worktrees, &main)?;
+    let pr: Vec<String> = PR.iter().map(|s| s.to_string()).collect();
+    let at = BumpAt {
+        rev: &graph.rev,
+        home: &home,
+        push: ask.push,
+        pr: ask.pr.then_some(pr.as_slice()),
+    };
+    bump(&git, &Programs, tool, pin, &at).map_err(|e| e.to_string())
 }
 
 fn render(rows: &[Row], json: bool) -> String {
@@ -107,11 +134,14 @@ fn render(rows: &[Row], json: bool) -> String {
             put(k("moved_by"), "follow");
         }
         match &r.bump {
-            Some(Bumped::Bumped { branch, pushed, pr }) => {
+            Some(Bumped::Bumped { branch, pushed, pr, pr_error }) => {
                 put(k("branch"), branch);
                 put(k("pushed"), if *pushed { "yes" } else { "no" });
                 if let Some(pr) = pr {
                     put(k("pr"), pr);
+                }
+                if let Some(e) = pr_error {
+                    put(k("pr_error"), e.lines().last().unwrap_or(""));
                 }
             }
             Some(Bumped::BranchExists { branch }) => put(k("branch"), branch),
@@ -121,6 +151,9 @@ fn render(rows: &[Row], json: bool) -> String {
             }
             Some(Bumped::Refused { why }) => put(k("why"), why),
             None => {}
+        }
+        if let Some(e) = &r.error {
+            put(k("error"), e);
         }
     }
     out

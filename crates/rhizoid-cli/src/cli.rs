@@ -12,7 +12,7 @@
 //!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
 //!   rhizoid assemble --done TAG [--repo DIR] [--force]  end a tag's worktree
 //!   rhizoid send-back BRANCH --onto REF --out DIR [--config FILE] [--tested SHA] [--fork ID] [--repo DIR] [--json]
-//!   rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--push] [--pr] [--json]   every pin in one place; now bumps
+//!   rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--fetch] [--push] [--pr] [--json]   every pin in one place; now bumps
 //!   rhizoid completions SHELL | man | --version | --help
 //! ```
 
@@ -175,7 +175,7 @@ contract! {
         key: "fetch",
         ty: Type::Bool,
         default: Some(false),
-        subcommands: &[Command::Status, Command::Assemble],
+        subcommands: &[Command::Status, Command::Assemble, Command::Bump],
         arg: Some(Arg::long("fetch")),
         summary: "Fetch first: status, each clone's tags and branches; assemble, every remote of the clone, pruning (otherwise the clones are read as they are).",
         ..Input::EMPTY

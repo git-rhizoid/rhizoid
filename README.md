@@ -231,7 +231,7 @@ conflict or a failed check, 2 when it could not run.
 ## rhizoid bump
 
 ```
-rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--push] [--pr] [--json]
+rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--fetch] [--push] [--pr] [--json]
 ```
 
 Every pin of a graph in one place: each `[[tool]]` and `[[slice]]` follower, the file and value that pins it, and the
@@ -242,7 +242,11 @@ back before it is committed (a value that appears twice, or does not read back, 
 tool's `gate`, when it has one, passed before the commit (`gated-out` commits nothing); `--push` pushes the branch to
 the follower's `origin`, `--pr` also opens its pull request (`gh pr create --fill`). A branch already there is
 `branch-exists`. Slices are moved by `follow`, which lays their files: `bump` lists them, `moved_by=follow`. The
-follower's own checkout is never touched, and the worktree always goes.
+follower's own checkout is never touched, and the worktree always goes. The commit is the pin alone: a gate that changes any other
+file is refused (`refused`, with why), and a bump commit is never signed. `--fetch` fetches each clone first, and a
+branch already on `origin` counts as `branch-exists`. When the pull request command fails after the push, the branch
+stays, pushed, and `pin.N.pr_error` says why. `--push` and `--pr` go only with `now`. A `gate` is argv from the graph
+file, run with `now`: run `bump now` only on a graph you trust.
 
 A tool pin is a TOML `key` or a `line` (as for `status`); a key whose value carries more than the version says how,
 and an attended pin names the check a bump must pass:
