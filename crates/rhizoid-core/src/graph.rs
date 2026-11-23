@@ -286,7 +286,9 @@ impl TryFrom<RawTool> for Tool {
     type Error = String;
     fn try_from(r: RawTool) -> Result<Tool, String> {
         let read = match (r.key, r.line) {
-            (Some(k), None) => PinRead::Key(k.split('.').map(str::to_string).collect()),
+            (Some(k), None) => {
+                PinRead::Key(key_path(&k).map_err(|e| format!("tool {}: {e}", r.name))?)
+            }
             (None, Some(l)) => match l.split_once("{version}") {
                 Some((b, a)) => PinRead::Line { before: b.to_string(), after: a.to_string() },
                 None => return Err(format!("tool {}: `line` has no {{version}} in it", r.name)),
@@ -321,6 +323,36 @@ impl TryFrom<RawTool> for Tool {
             listed_in: r.listed_in,
             followers: r.followers,
         })
+    }
+}
+
+/// A TOML dotted key's parts: `a.b.c`, a part in quotes kept whole (`patch."https://github.com/o/r".pkg.tag`).
+fn key_path(key: &str) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    let mut rest = key.trim();
+    loop {
+        let (part, after) = match rest.chars().next() {
+            Some(q @ ('"' | '\'')) => {
+                let end = rest[1..]
+                    .find(q)
+                    .ok_or_else(|| format!("key {key:?}: a quote is not closed"))?;
+                (rest[1..=end].to_string(), &rest[end + 2..])
+            }
+            _ => {
+                let end = rest.find('.').unwrap_or(rest.len());
+                (rest[..end].trim().to_string(), &rest[end..])
+            }
+        };
+        if part.is_empty() {
+            return Err(format!("key {key:?} has an empty part"));
+        }
+        parts.push(part);
+        let after = after.trim_start();
+        match after.strip_prefix('.') {
+            Some(next) => rest = next.trim_start(),
+            None if after.is_empty() => return Ok(parts),
+            None => return Err(format!("key {key:?}: something after a quoted part")),
+        }
     }
 }
 

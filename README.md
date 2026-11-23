@@ -263,6 +263,7 @@ tag_prefix = "lpoco-attended-v"
 pin = "procedures/steps/Cargo.toml"
 key = "dependencies.lpoco-attended.tag"
 value = "lpoco-attended-v{version}"           # a Cargo git dependency's tag
+                                             # a key part in quotes is kept whole: patch."https://github.com/o/r".pkg.tag
 gate = ["cargo", "check", "--manifest-path", "procedures/steps/Cargo.toml"]   # argv, in the bumped worktree;
                                              #   any exit but 0 commits nothing
 also = ["procedures/steps/Cargo.lock"]       # what the gate may change: committed with the pin
