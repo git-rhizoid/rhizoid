@@ -9,7 +9,7 @@
 
 use crate::finding::{Check, Finding, Verdict};
 use crate::graph::{Fork, Graph, Layer, PinRead, PinTable, RepoName, Slice, Tool};
-use crate::repos::{Level, RepoError, Repos};
+use crate::repos::{Level, RefRead, RepoError, Repos};
 use crate::text::{
     is_three_part_release, latest_release, lines_missing, marked_part, raw_marked_part, same_text,
     table_names,
@@ -35,6 +35,9 @@ pub fn status(graph: &Graph, repos: &dyn Repos) -> Result<Vec<Finding>, RepoErro
     }
     for p in &graph.pin_tables {
         cx.pin_table(p, &mut out)?;
+    }
+    for r in &graph.references {
+        out.push(reference(r, repos)?);
     }
     for f in &graph.forks {
         cx.fork(f, &mut out)?;
@@ -685,4 +688,37 @@ impl Cx<'_> {
         });
         Ok(())
     }
+}
+
+/// A reference's local tag against the commit the graph records: current when it peels to it; behind when it is
+/// missing, naming the fetch that makes it; moved by hand when it holds any other commit.
+fn reference(r: &crate::graph::Reference, repos: &dyn Repos) -> Result<Finding, RepoError> {
+    let edge = Edge { follower: r.repo.as_str(), source: r.url.as_str(), check: Check::Reference };
+    let short = &r.commit[..12];
+    Ok(match repos.reference(r)? {
+        RefRead::At(c) if c == r.commit => {
+            edge.current(format!("{} is {} at {} ({short})", r.tag, r.name, r.reference))
+        }
+        RefRead::At(c) => edge.by_hand(format!(
+            "{} is {}, not {short}, the commit the graph records for {} at {}",
+            r.tag,
+            &c[..c.len().min(12)],
+            r.name,
+            r.reference
+        )),
+        RefRead::Missing => edge.behind(format!(
+            "{} is missing - in the clone of {}: {} (or status --fetch)",
+            r.tag,
+            r.repo,
+            r.fetch_command()
+        )),
+        RefRead::Made => {
+            edge.current(format!("{} made now: {} at {} ({short})", r.tag, r.name, r.reference))
+        }
+        RefRead::NotMade(why) => edge.behind(format!(
+            "{} is missing and --fetch could not make it: {why} - by hand: {}",
+            r.tag,
+            r.fetch_command()
+        )),
+    })
 }

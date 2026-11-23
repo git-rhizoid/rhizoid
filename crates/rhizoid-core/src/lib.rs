@@ -26,5 +26,5 @@ pub use ports::{
     BranchSource, CommandPort, FormatPatch, GitHubPort, GitPort, MergeOutcome, MergeResult,
     PortError, RebaseResult,
 };
-pub use repos::{Level, RepoError, Repos};
+pub use repos::{Level, RefRead, RepoError, Repos};
 pub use status::status;

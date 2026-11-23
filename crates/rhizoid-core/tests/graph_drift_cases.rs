@@ -294,6 +294,12 @@ fn a_clone_that_is_missing_stops_the_report() {
         ) -> Result<Vec<(String, u64, String)>, RepoError> {
             Err(RepoError::NoClone(r.to_string()))
         }
+        fn reference(
+            &self,
+            r: &rhizoid_core::graph::Reference,
+        ) -> Result<rhizoid_core::RefRead, RepoError> {
+            Err(RepoError::NoClone(r.repo.to_string()))
+        }
         fn marked(
             &self,
             r: &rhizoid_core::RepoName,
@@ -743,4 +749,60 @@ fn a_deeper_key_covers_its_entry_and_a_missing_table_is_said() {
     let f = one(&fs, LAB_MACHINE, Check::PinCoverage);
     assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
     assert!(f.detail.contains("no such table"), "{f}");
+}
+
+const SHA: &str = "1111111111111111111111111111111111111111";
+fn reference_edge() -> String {
+    format!(
+        "[[reference]]\nrepo = \"grenudi/linux\"\nname = \"android-walleye\"\nurl = \"https://android.googlesource.com/kernel/msm\"\nref = \"android-msm-wahoo-4.4\"\ncommit = \"{SHA}\"\ntag = \"reference/android-walleye/QQ3A\"\nwhy = \"the kernel the phone shipped with\"\ndepth = 1\n"
+    )
+}
+
+#[test]
+fn a_reference_tag_at_its_commit_is_current_missing_is_behind_and_another_commit_is_moved_by_hand()
+{
+    let graph = graph_with(&reference_edge());
+    let mut w = World::current();
+    let f = one(&status(&graph, &w).unwrap(), "grenudi/linux", Check::Reference).clone();
+    assert_eq!(f.verdict, Verdict::Behind, "{f}");
+    assert!(
+        f.detail.contains("git fetch --no-tags --no-recurse-submodules --depth 1 -- 'https://android.googlesource.com/kernel/msm' 'android-msm-wahoo-4.4' && git update-ref 'refs/tags/reference/android-walleye/QQ3A' 1111111111111111111111111111111111111111 0000000000000000000000000000000000000000"),
+        "the exact fetch: {f}"
+    );
+    w.reference_tag("grenudi/linux", "reference/android-walleye/QQ3A", SHA);
+    let f = one(&status(&graph, &w).unwrap(), "grenudi/linux", Check::Reference).clone();
+    assert_eq!(f.verdict, Verdict::Current, "{f}");
+    w.reference_tag("grenudi/linux", "reference/android-walleye/QQ3A", &"2".repeat(40));
+    let f = one(&status(&graph, &w).unwrap(), "grenudi/linux", Check::Reference).clone();
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(f.is_drift() && f.detail.contains("not 111111111111"), "{f}");
+}
+
+#[test]
+fn a_reference_without_a_whole_sha_or_a_why_is_refused_when_the_graph_is_read() {
+    for (bad, says) in [
+        (reference_edge().replace(SHA, "1111111"), "not a whole sha"),
+        (
+            reference_edge().replace("why = \"the kernel the phone shipped with\"", "why = \"\""),
+            "no why",
+        ),
+        (format!("{}{}", reference_edge(), reference_edge()), "another reference's too"),
+        (reference_edge().replace("depth = 1", "depth = 0"), "depth 0"),
+        (
+            reference_edge().replace("ref = \"android-msm-wahoo-4.4\"", "ref = \"v1:refs/tags/x\""),
+            "not a plain ref name",
+        ),
+        (
+            reference_edge().replace("ref = \"android-msm-wahoo-4.4\"", "ref = \"+v1\""),
+            "not a plain ref name",
+        ),
+        (
+            reference_edge().replace("tag = \"reference/android-walleye/QQ3A\"", "tag = \"x~1\""),
+            "not a plain ref name",
+        ),
+        (reference_edge().replace(SHA, &"A".repeat(40)), "lowercase"),
+    ] {
+        let e = rhizoid_core::Graph::parse(&format!("{GRAPH}\n{bad}")).unwrap_err();
+        assert!(e.contains(says), "{says}: {e}");
+    }
 }

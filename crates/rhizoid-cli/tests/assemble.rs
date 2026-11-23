@@ -533,3 +533,34 @@ fn done_refuses_a_worktree_with_commits_beyond_its_tag() {
     assert!(String::from_utf8_lossy(&refused.stderr).contains("commits beyond"), "{refused:?}");
     assert!(worktree.is_dir());
 }
+
+#[test]
+fn a_list_whose_base_or_entry_is_a_reference_tag_of_the_graph_is_refused() {
+    let w = world();
+    let sha = git_out(&w.repo, &["rev-parse", "v1^{commit}"]).trim().to_string();
+    let graph = w.root.join("graph.toml");
+    let edge = |tag: &str| {
+        format!(
+            "[[reference]]\nrepo = \"acme/linux\"\nname = \"vendor\"\nurl = \"https://example.org/vendor\"\nref = \"build-1\"\ncommit = \"{sha}\"\ntag = \"{tag}\"\nwhy = \"the vendor's kernel at the build\"\n"
+        )
+    };
+    std::fs::write(&graph, edge("v1")).unwrap();
+    let out = w.assemble(&["two", "--graph", graph.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("the base v1 is a reference tag"),
+        "{out:?}"
+    );
+
+    std::fs::write(&graph, edge("topic/b")).unwrap();
+    let out = w.assemble(&["two", "--graph", graph.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("the entry topic/b is a reference tag"),
+        "{out:?}"
+    );
+
+    std::fs::write(&graph, edge("reference/vendor/build-1")).unwrap();
+    let out = w.assemble(&["two", "--graph", graph.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "no reference in the list: {out:?}");
+}

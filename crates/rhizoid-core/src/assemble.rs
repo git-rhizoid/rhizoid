@@ -344,6 +344,8 @@ pub struct Ask<'a> {
     pub fetch: bool,
     /// A commit whose tree the result must equal (one built and tested by hand).
     pub reproduces: Option<&'a str>,
+    /// The tags the graph names as references: read, never built on - a list whose base or entry is one is refused.
+    pub references: &'a [String],
 }
 /// One entry as it was merged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -574,6 +576,22 @@ impl From<PortError> for AssembleError {
 /// conflict rerere cannot resolve (the worktree left unlocked, for a hand to resolve), then the tag carries the
 /// recipe and the worktree is locked until `done`.
 pub fn assemble(git: &impl GitPort, ask: &Ask) -> Result<Report, AssembleError> {
+    let is_reference = |name: &str| {
+        let name = name.strip_prefix("refs/tags/").unwrap_or(name);
+        ask.references.iter().any(|t| t == name)
+    };
+    if is_reference(&ask.list.base) {
+        return Err(AssembleError(format!(
+            "the base {} is a reference tag of the graph: a reference is read, never built on",
+            ask.list.base
+        )));
+    }
+    if let Some(e) = ask.list.entries.iter().find(|e| is_reference(&e.branch)) {
+        return Err(AssembleError(format!(
+            "the entry {} is a reference tag of the graph: a reference is read, never built on",
+            e.branch
+        )));
+    }
     if ask.fetch {
         git.fetch_prune()?;
     }

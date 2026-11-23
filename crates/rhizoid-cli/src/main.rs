@@ -279,6 +279,13 @@ fn request(r: &Resolution) -> Result<Request, String> {
             worktree: Contract::WORKTREE.get_from(r).filter(|s| !s.is_empty()).map(Into::into),
             fetch: Contract::FETCH.get_from(r).unwrap_or(false),
             reproduces: Contract::REPRODUCES.get_from(r).filter(|s| !s.is_empty()),
+            // the graph named, or the one here when there is one: its reference tags are refused as a base or entry
+            graph: match Contract::GRAPH.get_from(r).filter(|s| !s.is_empty()) {
+                Some(g) => Some(g.into()),
+                None => {
+                    Some(current_dir()?.join(commands::status::GRAPH_FILE)).filter(|p| p.is_file())
+                }
+            },
             json: Contract::JSON.get_from(r).unwrap_or(false),
         }),
         Command::Completions => {

@@ -7,7 +7,7 @@
 //!   rhizoid update MODULE [now]       rhizoid refresh       rhizoid remove MODULE [now]     (cuttings, in the graph)
 //!   rhizoid status [--graph FILE] [--root DIR] [--fetch] [--json]   every edge of a repository graph, read-only
 //!   rhizoid check [--graph FILE]      whether this version can read the graph: parsed and checked, no clones, no network
-//!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
+//!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--graph FILE] [--fetch] [--json]
 //!   rhizoid assemble --done TAG [--repo DIR] [--force]  end a tag's worktree
 //!   rhizoid send-back BRANCH --onto REF --out DIR [--config FILE] [--tested SHA] [--fork ID] [--repo DIR] [--json]
 //!   rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--fetch] [--push] [--pr] [--land] [--json]   every pin in one place; now bumps
@@ -139,7 +139,7 @@ contract! {
     GRAPH: String, Command = Input {
         key: "graph",
         ty: Type::String,
-        subcommands: &[Command::Status, Command::Check, Command::Bump, Command::Add, Command::Import, Command::Update, Command::Refresh, Command::Remove],
+        subcommands: &[Command::Status, Command::Check, Command::Assemble, Command::Bump, Command::Add, Command::Import, Command::Update, Command::Refresh, Command::Remove],
         env: Some(Env::new("RHIZOID_GRAPH")),
         arg: Some(Arg { value_name: "FILE", ..Arg::long("graph") }),
         summary: "The graph file: the edges to read (rhizoid.graph.toml here when none is given).",

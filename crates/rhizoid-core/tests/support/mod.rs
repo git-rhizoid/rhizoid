@@ -28,6 +28,7 @@ pub struct World {
     heads: BTreeMap<(String, Option<String>), String>,
     pub level: Option<Level>,
     no_main: BTreeSet<String>,
+    reference_tags: BTreeMap<(String, String), String>,
 }
 
 impl World {
@@ -45,6 +46,10 @@ impl World {
     }
     pub fn drop_rev_main(&mut self, repo: &str) -> &mut Self {
         self.no_main.insert(repo.to_string());
+        self
+    }
+    pub fn reference_tag(&mut self, repo: &str, tag: &str, commit: &str) -> &mut Self {
+        self.reference_tags.insert((repo.into(), tag.into()), commit.into());
         self
     }
     pub fn tag(&mut self, repo: &str, tag: &str) -> &mut Self {
@@ -153,6 +158,15 @@ impl Repos for World {
             }
         }
         Ok(hits)
+    }
+    fn reference(
+        &self,
+        r: &rhizoid_core::graph::Reference,
+    ) -> Result<rhizoid_core::RefRead, RepoError> {
+        Ok(match self.reference_tags.get(&(r.repo.to_string(), r.tag.clone())) {
+            Some(c) => rhizoid_core::RefRead::At(c.clone()),
+            None => rhizoid_core::RefRead::Missing,
+        })
     }
     /// The fixture's .gitattributes, read for the two shapes the tests use: `DIR/** ATTR` and `PATH ATTR`.
     fn marked(

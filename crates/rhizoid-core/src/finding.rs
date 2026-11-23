@@ -69,6 +69,8 @@ pub enum Check {
     WorktreeTag,
     /// A table of pins the graph covers whole: every key an edge, or unpinned with a why.
     PinCoverage,
+    /// A reference's local tag against the commit the graph records.
+    Reference,
 }
 
 impl Check {
@@ -93,6 +95,7 @@ impl Check {
             Check::Recipe => "recipe",
             Check::WorktreeTag => "worktree-tag",
             Check::PinCoverage => "pin-coverage",
+            Check::Reference => "reference",
         }
     }
 }

@@ -105,11 +105,15 @@ pub trait IntegrationReads {
 /// Every integration edge's findings, in the graph's order.
 pub fn integration_status(
     edges: &[Integration],
+    references: &[crate::graph::Reference],
     git: &dyn IntegrationReads,
 ) -> Result<Vec<Finding>, RepoError> {
     let mut out = Vec::new();
     for edge in edges {
-        let clone = Clone::read(edge, git)?;
+        let mut clone = Clone::read(edge, git)?;
+        // a reference tag the graph names is in the scheme: the graph says what it is
+        clone.references =
+            references.iter().filter(|r| r.repo == edge.repo).map(|r| r.tag.clone()).collect();
         clone.scheme(&mut out);
         clone.topics(&mut out)?;
         clone.against_origin(&mut out)?;
@@ -127,6 +131,8 @@ struct Clone<'a> {
     origin: BTreeMap<String, String>,
     tags: BTreeMap<String, String>,
     messages: BTreeMap<String, String>,
+    /// The tags the graph names as references in this clone.
+    references: Vec<String>,
 }
 
 impl<'a> Clone<'a> {
@@ -141,6 +147,7 @@ impl<'a> Clone<'a> {
             origin: refs("refs/remotes/origin/")?,
             tags: refs("refs/tags/")?,
             messages: git.tag_messages(&edge.repo)?.into_iter().collect(),
+            references: Vec::new(),
         })
     }
 
@@ -179,7 +186,8 @@ impl<'a> Clone<'a> {
         let stray_tags: Vec<&String> = self
             .tags
             .keys()
-            .filter(|t| !self.is_release(t) && !scheme.tags.iter().any(|p| p.matches(t)))
+            .filter(|t| !self.is_release(t) && !self.references.contains(t))
+            .filter(|t| !scheme.tags.iter().any(|p| p.matches(t)))
             .collect();
         let stray = |kind: &str, names: &[&String]| {
             let shown: Vec<&str> = names.iter().take(STRAYS_SHOWN).map(|n| n.as_str()).collect();

@@ -161,7 +161,7 @@ fn topic_notes(ask: &Ask, graph: &Graph, name: &RepoName, plan: &mut Plan) {
         return;
     }
     let repos = crate::git_repos::GitRepos::new(&ask.root, graph, false);
-    match integration_status(std::slice::from_ref(edge), &repos) {
+    match integration_status(std::slice::from_ref(edge), &graph.references, &repos) {
         Err(e) => plan.notes.push(format!("status could not read the clone: {e}")),
         Ok(findings) => {
             let behind: Vec<_> = findings
