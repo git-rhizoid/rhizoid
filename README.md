@@ -242,9 +242,10 @@ back before it is committed (a value that appears twice, or does not read back, 
 tool's `gate`, when it has one, passed before the commit (`gated-out` commits nothing); `--push` pushes the branch to
 the follower's `origin`, `--pr` also opens its pull request (`gh pr create --fill`). A branch already there is
 `branch-exists`. A slice pin that is behind is moved through `follow` the same way: a branch
-`rhizoid/bump/SOURCE-VERSION`, the release laid into the fresh worktree as idealkb's follow.sh lays it (the pin moved
+`rhizoid/bump/OWNER-REPO-VERSION`, the release laid into the fresh worktree as idealkb's follow.sh lays it (the pin moved
 with it), the slice's `gate` passed, and every file follow laid committed; a follower that changed a generic file
-(follow's 3) is `refused` - left for a hand, as update-pins leaves it. The
+(follow's 3) is `refused` - left for a hand, as update-pins leaves it; so is a release whose list names a path
+outside the follower, one whose pin file is not the graph's, and a gate that changed more than follow laid. The
 follower's own checkout is never touched, and the worktree always goes. The commit is the pin and the files the tool names in `also`: a gate that changes any other
 file is refused (`refused`, with why), and a bump commit is never signed. `--fetch` fetches each clone first, and a
 branch already on `origin` counts as `branch-exists`. When the pull request command fails after the push, the branch

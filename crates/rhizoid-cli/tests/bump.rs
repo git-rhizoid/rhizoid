@@ -175,12 +175,12 @@ fn now_bumps_each_tool_pin_on_a_branch_with_only_its_value_changed() {
     assert_eq!(value(&out, "pin.1.pushed").as_deref(), Some("no"));
     assert_eq!(value(&out, "pin.2.state").as_deref(), Some("bumped"), "the gate passed");
     assert_eq!(value(&out, "pin.3.state").as_deref(), Some("bumped"), "a slice, through follow");
-    assert_eq!(value(&out, "pin.3.branch").as_deref(), Some("rhizoid/bump/kb-0.2.0"));
-    assert_eq!(git(&w.lab, &["show", "rhizoid/bump/kb-0.2.0:queries/k.sql"]), "-- k v2");
-    assert!(git(&w.lab, &["show", "rhizoid/bump/kb-0.2.0:idealkb.toml"])
+    assert_eq!(value(&out, "pin.3.branch").as_deref(), Some("rhizoid/bump/acme-kb-0.2.0"));
+    assert_eq!(git(&w.lab, &["show", "rhizoid/bump/acme-kb-0.2.0:queries/k.sql"]), "-- k v2");
+    assert!(git(&w.lab, &["show", "rhizoid/bump/acme-kb-0.2.0:idealkb.toml"])
         .contains("version = \"0.2.0\""));
     assert_eq!(
-        git(&w.lab, &["log", "-1", "--format=%s", "rhizoid/bump/kb-0.2.0"]),
+        git(&w.lab, &["log", "-1", "--format=%s", "rhizoid/bump/acme-kb-0.2.0"]),
         "chore(deps): follow acme/kb 0.1.0 -> 0.2.0"
     );
     assert_eq!(
@@ -359,4 +359,18 @@ fn a_slice_gate_that_fails_commits_nothing() {
     assert_eq!(value(&out, "pin.3.state").as_deref(), Some("gated-out"), "{out:?}");
     assert_eq!(value(&out, "pin.3.gate.exit").as_deref(), Some("6"));
     assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/bump/kb*"]), "");
+}
+
+#[test]
+fn a_slice_release_naming_a_path_outside_the_follower_is_not_laid() {
+    let w = world(PASSING_GATE);
+    repo(
+        &w.root.join("acme/kb"),
+        &[("generic", "queries/k.sql\n../escape.txt\n"), ("queries/k.sql", "-- k v3\n")],
+        &["v0.3.0"],
+    );
+    let out = w.bump(&["now", "--only", "acme/lab"]);
+    assert_eq!(value(&out, "pin.3.state").as_deref(), Some("refused"), "{out:?}");
+    assert!(value(&out, "pin.3.why").unwrap().contains("outside the follower"), "{out:?}");
+    assert!(!w.root.join("acme/escape.txt").exists());
 }

@@ -339,8 +339,7 @@ pub fn bump_slice(
     at: &BumpAt,
 ) -> Result<Bumped, crate::PortError> {
     let old = pin.pinned.clone().unwrap_or_else(|| "none".to_string());
-    let leaf = slice.source.as_str().rsplit('/').next().unwrap_or(slice.source.as_str());
-    let branch = format!("rhizoid/bump/{leaf}-{}", pin.latest);
+    let branch = format!("rhizoid/bump/{}-{}", slice.source.as_str().replace('/', "-"), pin.latest);
     if slice.tag_prefix != "v" {
         return Ok(Bumped::Refused {
             why: format!(
@@ -349,26 +348,71 @@ pub fn bump_slice(
             ),
         });
     }
+    // what follow would write must stay in the follower: no absolute or climbing path in the release's list
+    let generic = String::from_utf8_lossy(
+        &source_git.show(&format!("v{}", pin.latest), "generic")?.unwrap_or_default(),
+    )
+    .into_owned();
+    let escapes = |p: &str| p.starts_with('/') || p.split('/').any(|part| part == "..");
+    let named: Vec<&str> = generic
+        .lines()
+        .flat_map(|l| match l.strip_prefix("#! pin = ").or_else(|| l.strip_prefix("#! from = ")) {
+            Some(v) => vec![v],
+            None if l.trim_start().starts_with('#') => vec![],
+            None => l.split_whitespace().collect(),
+        })
+        .collect();
+    if let Some(bad) = named.iter().find(|p| escapes(p)) {
+        return Ok(Bumped::Refused {
+            why: format!(
+                "{} {}'s generic names {bad}, outside the follower: not laid",
+                slice.source, pin.latest
+            ),
+        });
+    }
     on_branch(git, at, pin, &branch, |worktree| {
         let laid = crate::follow::follow(source_git, cmd, source, worktree, &pin.latest)?;
         match laid.code {
             0 => {}
-            3 => return Ok(Bumped::Refused {
-                why: format!(
+            3 => {
+                return Ok(Bumped::Refused {
+                    why: format!(
                     "the follower changed a generic file: left for a hand to look at (follow: {})",
                     laid.said.lines().find(|l| l.contains("replaced")).unwrap_or("")
                 ),
-            }),
-            code => {
-                return Ok(Bumped::Refused {
-                    why: format!("follow ended {code}: {}", laid.complained.trim()),
                 })
             }
+            code => {
+                let why = laid.complained.trim();
+                let why = if why.is_empty() { laid.said.lines().last().unwrap_or("") } else { why };
+                return Ok(Bumped::Refused { why: format!("follow ended {code}: {why}") });
+            }
         }
+        // the graph's pin must be the one follow moved
+        let moved = std::fs::read_to_string(worktree.join(&slice.pin)).unwrap_or_default();
+        if !moved.lines().any(|l| l == format!("version = \"{}\"", pin.latest)) {
+            return Ok(Bumped::Refused {
+                why: format!(
+                    "follow did not move {} to {}: the source's generic names another pin file",
+                    slice.pin, pin.latest
+                ),
+            });
+        }
+        let files = git.changed_files(worktree)?;
         if let Some(out) = gated(cmd, slice.gate.as_deref(), worktree)? {
             return Ok(out);
         }
-        let files = git.changed_files(worktree)?;
+        // the commit is what follow laid: a gate that changed more is refused, not swept in
+        let after = git.changed_files(worktree)?;
+        let more: Vec<&String> = after.iter().filter(|f| !files.contains(f)).collect();
+        if !more.is_empty() {
+            return Ok(Bumped::Refused {
+                why: format!(
+                    "the gate changed more than follow laid: {}",
+                    more.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+            });
+        }
         let message = format!("chore(deps): follow {} {old} -> {}", slice.source, pin.latest);
         commit_push_pr(git, cmd, at, worktree, &branch, &files, &message)
     })
