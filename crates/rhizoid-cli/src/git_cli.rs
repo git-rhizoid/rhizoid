@@ -263,6 +263,32 @@ impl GitPort for GitCli {
         self.ok(&["push", "-q", remote, &format!("{commit}:refs/heads/{branch}")]).map(drop)
     }
 
+    fn fetch_tags(&self, remote: &str) -> Result<(), PortError> {
+        self.ok(&["fetch", "-q", "--tags", remote]).map(drop)
+    }
+
+    fn nearest_release_tag(&self, rev: &str, prefix: &str) -> Result<Option<String>, PortError> {
+        let pattern = format!("{prefix}[0-9]*");
+        let out = self.run(
+            &self.repo,
+            &[
+                "describe",
+                "--tags",
+                "--abbrev=0",
+                "--match",
+                &pattern,
+                "--exclude",
+                "*-cut.[0-9]*",
+                rev,
+            ],
+        )?;
+        Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+    }
+
+    fn push_tag(&self, remote: &str, name: &str) -> Result<(), PortError> {
+        self.ok(&["push", "-q", remote, &format!("refs/tags/{name}")]).map(drop)
+    }
+
     fn remotes(&self) -> Result<Vec<(String, String)>, PortError> {
         // the URLs as configured: `git remote -v` would show them after insteadOf rewrites
         let out = self.run(&self.repo, &["config", "--get-regexp", r"^remote\..*\.url$"])?;

@@ -263,6 +263,7 @@ tag_prefix = "lpoco-attended-v"
 pin = "procedures/steps/Cargo.toml"
 key = "dependencies.lpoco-attended.tag"
 value = "lpoco-attended-v{version}"           # a Cargo git dependency's tag
+                                             # tag_suffix = "-cut.N": a cutting's cuts, newest by release then N
                                              # a key part in quotes is kept whole: patch."https://github.com/o/r".pkg.tag
 gate = ["cargo", "check", "--manifest-path", "procedures/steps/Cargo.toml"]   # argv, in the bumped worktree;
                                              #   any exit but 0 commits nothing
@@ -345,6 +346,17 @@ releases it merges and pushes nothing: it says what `status`'s topic-base says -
 release, to be rebased onto it, which is the lane's work. `refresh` reads each fork against
 GitHub and changes nothing. `remove MODULE` takes the cutting out of the graph; the fork stays on GitHub - deleting a
 repository is a person's act.
+
+**Cut tags: a cutting's releases.** A one-branch cutting whose consumers pin its releases (a Cargo git tag) names the
+prefix of its upstream's release tags: `cut_tags = "lpoco-v"` on its `[[fork]]`. `update ... now` then tags the patch
+tip `RELEASE-cut.N` and pushes the tag - RELEASE the upstream release under it (`lpoco-v0.43.0`), N one past that
+release's cuts - but only when the patch tip differs from the newest cut tag's commit: a new upstream release merged
+in, or new patch commits on the same release (N+1). An update that changes nothing tags nothing. A consumer's
+`[[tool]]` says `tag_suffix = "-cut.N"`, and `bump` moves its pin to the newest cut, never to a plain upstream tag the
+fork also carries (that would drop the patches). **Read the order as rhizoid does, not as semver**: cuts are ordered
+by release, then N, so `v0.43.0-cut.1` is newer than `v0.43.0` and `v0.42.9-cut.7`, and `v0.44.0-cut.1` newer than
+`v0.43.0-cut.9` - while semver would read `v0.43.0-cut.1` as a pre-release, older than `v0.43.0`. Cargo resolves a git
+`tag` exactly as written, so the pin means the cut it names.
 
 GitHub is asked only through gh, signed in as the person (rhizoid keeps no token). The fork's clone is where the graph
 says (`[clones]`, else `ROOT/owner/repo`); branch mode needs it, integration mode does not. In the clone, the fork is

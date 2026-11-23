@@ -142,6 +142,15 @@ pub trait GitPort {
     /// Push the commit `commit` to `remote`'s branch `branch`, never forced (a branch that moved elsewhere refuses).
     fn push_ref(&self, commit: &str, remote: &str, branch: &str) -> Result<(), PortError>;
 
+    /// Fetch `remote`'s tags into the clone.
+    fn fetch_tags(&self, remote: &str) -> Result<(), PortError>;
+
+    /// The nearest tag under `rev` named PREFIX and a digit, leaving out cut tags (`*-cut.N`).
+    fn nearest_release_tag(&self, rev: &str, prefix: &str) -> Result<Option<String>, PortError>;
+
+    /// Push the tag `name` to `remote`, never forced.
+    fn push_tag(&self, remote: &str, name: &str) -> Result<(), PortError>;
+
     /// The clone's remotes, each with its fetch URL.
     fn remotes(&self) -> Result<Vec<(String, String)>, PortError>;
 

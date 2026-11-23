@@ -87,6 +87,8 @@ pub enum Step {
     },
     /// Merge tracking into the patch branch in a fresh worktree, and push it.
     MergePatch { branch: String, tracking: String, remote: String },
+    /// Tag the patch tip RELEASE-cut.N and push the tag, when it moved since the newest cut tag.
+    CutTag { branch: String, prefix: String, remote: String, upstream: String },
     /// Write the cutting's record into the graph file (local).
     Record { record: Record },
     /// Take the cutting's `[[fork]]` edge out of the graph file (local; the fork stays on GitHub).
@@ -103,6 +105,7 @@ impl Step {
                 | Step::MergeUpstream { .. }
                 | Step::FastForwardTracking { .. }
                 | Step::MergePatch { .. }
+                | Step::CutTag { .. }
         )
     }
 
@@ -136,6 +139,9 @@ impl Step {
                     record.fork, record.upstream, record.patches, record.added
                 )
             }
+            Step::CutTag { branch, prefix, remote, .. } => format!(
+                "if {branch} moved since its newest cut tag: tag its tip {prefix}RELEASE-cut.N (RELEASE the release under it, N one past its cuts) and push the tag to the fork ({remote})"
+            ),
             Step::Drop { fork } => format!("take fork {fork} out of the graph (the fork itself stays)"),
         }
     }
@@ -492,7 +498,21 @@ pub fn plan_update(
         });
     }
     match side {
-        PatchSide::Branch(b) => plan.steps.push(Step::MergePatch { branch: b, tracking, remote }),
+        PatchSide::Branch(b) => {
+            plan.steps.push(Step::MergePatch {
+                branch: b.clone(),
+                tracking,
+                remote: remote.clone(),
+            });
+            if let Some(prefix) = &f.cut_tags {
+                plan.steps.push(Step::CutTag {
+                    branch: b,
+                    prefix: prefix.clone(),
+                    remote,
+                    upstream: f.upstream.url(),
+                });
+            }
+        }
         PatchSide::Integration => plan.notes.push(
             "patches = integration: its topics are assembled by rhizoid assemble, not merged here"
                 .to_string(),
@@ -675,6 +695,47 @@ pub fn carry_out(
                     MergeResult::AlreadyContained => {}
                     MergeResult::Merged { .. } => git.push_ref(&head?, remote, branch)?,
                 }
+            }
+            Step::CutTag { branch, prefix, remote, upstream } => {
+                // the releases are the upstream's tags, the cuts the fork's
+                git.fetch_tags(upstream)?;
+                git.fetch_tags(remote)?;
+                let tip = git.fetch_ref(remote, branch)?;
+                let cuts: Vec<String> =
+                    git.tags(prefix)?.into_iter().filter(|t| t.contains("-cut.")).collect();
+                let newest = crate::text::latest_cut(&cuts, prefix, "-cut.N");
+                let newest_at = match &newest {
+                    Some(v) => git.commit(&format!("refs/tags/{prefix}{v}"))?,
+                    None => None,
+                };
+                if newest_at.as_deref() == Some(tip.as_str()) {
+                    done.push(format!(
+                        "no cut tag: {branch} is {prefix}{} already",
+                        newest.unwrap_or_default()
+                    ));
+                    continue;
+                }
+                let release = git.nearest_release_tag(&tip, prefix)?.ok_or_else(|| {
+                    PortError(format!(
+                        "no {prefix}RELEASE tag under {branch}: nothing to name a cut after"
+                    ))
+                })?;
+                let version = release.strip_prefix(prefix.as_str()).unwrap_or(&release).to_string();
+                let n = cuts
+                    .iter()
+                    .filter_map(|t| t.strip_prefix(prefix.as_str()))
+                    .filter_map(|v| crate::text::cut_order(v, "-cut.N").map(|(_, n)| (v, n)))
+                    .filter(|(v, _)| {
+                        v.split_once("-cut.").map(|(r, _)| r) == Some(version.as_str())
+                    })
+                    .map(|(_, n)| n)
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+                let name = format!("{release}-cut.{n}");
+                git.tag(&name, &tip, &format!("rhizoid cut: {branch} on {release}"))?;
+                git.push_tag(remote, &name)?;
+                done.push(format!("tagged {name} and pushed it"));
             }
             Step::Record { record } => {
                 let text = std::fs::read_to_string(doing.graph_file)

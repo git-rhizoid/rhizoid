@@ -249,6 +249,7 @@ struct RawTool {
     key: Option<String>,
     line: Option<String>,
     value: Option<String>,
+    tag_suffix: Option<String>,
     gate: Option<Vec<String>>,
     #[serde(default)]
     also: Vec<String>,
@@ -270,6 +271,8 @@ pub struct Tool {
     pub pin: String,
     /// How the version is read from that file.
     pub read: PinRead,
+    /// A cutting's releases: tags PREFIX + release + this suffix with its number (`-cut.N`), ordered by release, then N.
+    pub tag_suffix: Option<String>,
     /// What a `key` holds around the version (`lpoco-attended-v{version}` for a Cargo git tag): before and after.
     pub value: (String, String),
     /// A command a bump must pass before it is committed (argv, run in the follower's worktree): an attended pin's check.
@@ -308,6 +311,15 @@ impl TryFrom<RawTool> for Tool {
                 ))
             }
         };
+        if let Some(s) = &r.tag_suffix {
+            let fits = s.matches('N').count() == 1 && !s.starts_with('N');
+            if !fits {
+                return Err(format!(
+                    "tool {}: tag_suffix has one N, after some text (-cut.N)",
+                    r.name
+                ));
+            }
+        }
         if r.gate.as_ref().is_some_and(|g| g.is_empty()) {
             return Err(format!("tool {}: `gate` is a command: argv, not empty", r.name));
         }
@@ -318,6 +330,7 @@ impl TryFrom<RawTool> for Tool {
             pin: r.pin,
             read,
             value,
+            tag_suffix: r.tag_suffix,
             gate: r.gate,
             also: r.also,
             listed_in: r.listed_in,
@@ -372,6 +385,10 @@ pub struct Fork {
     /// `"integration"`, the topic branches the repository's `[[integration]]` edge assembles.
     #[serde(default)]
     pub patches: Option<String>,
+    /// For a one-branch cutting consumed by its releases (a Cargo git tag): the prefix of the upstream's release tags
+    /// (`lpoco-v`). `update ... now` then tags the patch tip RELEASE-cut.N when it moved since its newest cut tag.
+    #[serde(default)]
+    pub cut_tags: Option<String>,
     /// For an integration cutting, whose releases its topics are on (`torvalds/linux`): what it tracks, in place
     /// of a branch.
     #[serde(default)]

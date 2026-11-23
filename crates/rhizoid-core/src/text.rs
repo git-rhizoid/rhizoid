@@ -92,6 +92,36 @@ pub fn latest_release(tags: &[String], prefix: &str) -> Option<String> {
         .map(|(_, t)| t[prefix.len()..].to_string())
 }
 
+/// A cut tag's place in order (`0.43.0-cut.1` with `suffix` `-cut.N`): its release's numbers, then N; a plain release
+/// is N = 0. Never semver precedence, under which `0.43.0-cut.1` would be a pre-release of 0.43.0 and sort before it.
+pub fn cut_order(version: &str, suffix: &str) -> Option<(Vec<u64>, u64)> {
+    let (before, after) = suffix.split_once('N')?;
+    let (release, n) = match version.split_once(before).filter(|_| !before.is_empty()) {
+        Some((release, rest)) => {
+            let n = rest.strip_suffix(after)?;
+            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            (release, n.parse().ok()?)
+        }
+        None => (version, 0),
+    };
+    let numbers: Option<Vec<u64>> = release.split('.').map(|p| p.parse().ok()).collect();
+    Some((numbers?, n))
+}
+
+/// The newest cut tag of `tags` (`PREFIX` + release + `suffix`'s text with its number): ordered by release, then N.
+/// Only cut tags count - a fork also carries its upstream's plain tags, and pinning one would drop the patches.
+pub fn latest_cut(tags: &[String], prefix: &str, suffix: &str) -> Option<String> {
+    let (before, _) = suffix.split_once('N')?;
+    tags.iter()
+        .filter_map(|t| t.strip_prefix(prefix))
+        .filter(|v| v.contains(before))
+        .filter_map(|v| cut_order(v, suffix).map(|o| (o, v)))
+        .max()
+        .map(|(_, v)| v.to_string())
+}
+
 /// `1.2.3`: three whole numbers, a release and not a date.
 pub fn is_three_part_release(v: &str) -> bool {
     let parts: Vec<&str> = v.split('.').collect();
@@ -167,5 +197,37 @@ mod tests {
         assert!(!is_three_part_release("2026-11-17"));
         assert!(!is_three_part_release("1.2"));
         assert!(!is_three_part_release("1.2.x"));
+    }
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+
+    #[test]
+    fn cut_tags_order_by_release_then_n_never_by_semver() {
+        let o = |v: &str| cut_order(v, "-cut.N").unwrap();
+        assert!(o("0.43.0-cut.1") > o("0.43.0"), "a cut of a release beats the release");
+        assert!(o("0.43.0-cut.1") > o("0.42.9-cut.7"));
+        assert!(o("0.44.0-cut.1") > o("0.43.0-cut.9"));
+        assert!(o("0.43.0-cut.10") > o("0.43.0-cut.9"), "N as a number");
+        assert_eq!(cut_order("0.43.0-cut.x", "-cut.N"), None);
+    }
+
+    #[test]
+    fn only_cut_tags_are_a_cuttings_releases() {
+        let tags: Vec<String> = [
+            "v0.44.0",
+            "v0.43.0",
+            "v0.43.0-cut.9",
+            "v0.43.0-cut.10",
+            "v0.42.9-cut.7",
+            "w0.99.0-cut.1",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(latest_cut(&tags, "v", "-cut.N").as_deref(), Some("0.43.0-cut.10"));
+        assert_eq!(latest_cut(&["v1.0.0".to_string()], "v", "-cut.N"), None);
     }
 }
