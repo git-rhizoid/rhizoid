@@ -220,6 +220,18 @@ impl GitPort for GitCli {
         self.ok(&["tag", "-d", name]).map(drop)
     }
 
+    fn commit_all(&self, path: &Path, message: &str) -> Result<(), PortError> {
+        self.ok_in(path, &["commit", "-q", "-a", "-m", message]).map(drop)
+    }
+
+    fn push(&self, path: &Path, branch: &str) -> Result<(), PortError> {
+        self.ok_in(
+            path,
+            &["push", "-q", "origin", &format!("refs/heads/{branch}:refs/heads/{branch}")],
+        )
+        .map(drop)
+    }
+
     fn delete_branch(&self, name: &str) -> Result<(), PortError> {
         self.ok(&["branch", "-q", "-D", name]).map(drop)
     }

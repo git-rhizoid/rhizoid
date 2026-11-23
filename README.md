@@ -6,9 +6,10 @@ pinned, patchable without waiting on an upstream PR, and able to send clean patc
 when you want to. See [`git-rhizoid/git-rhizoid.github.io`](https://github.com/git-rhizoid/git-rhizoid.github.io)
 for the design log and current status.
 
-**Status: `rhizoid status`, `rhizoid assemble` and `rhizoid send-back` work** - status is the first step of the follow tool for every edge a
+**Status: `rhizoid status`, `assemble`, `send-back` and `bump` work** - status is the first step of the follow tool for every edge a
 repository has (a slice, a tool pin, a fork, an integration); assemble merges a named list of branches onto a base into
-a tag, in any repository; send-back drafts the next series version of a branch for its upstream; `add`, `import`, `update` and
+a tag, in any repository; send-back drafts the next series version of a branch for its upstream; bump lists every pin in one place and bumps
+tool pins on branches; `add`, `import`, `update` and
 `refresh` wait for the GitHub adapter. The rest of the repo is
 the devenv and CI/release scaffolding (from [rustnix](https://github.com/grenudi/rustnix)).
 
@@ -226,6 +227,44 @@ prints no `version` - it is `draft=vN`, with `draft_tag` once made. Beside them 
 with, or `none`), `check.N.name`, `check.N.exit` and `check.N.counts=no` for a reported-only check, `recipient.N`, and at
 a conflict `conflict.commit`, `conflict.subject` and `conflict.path.N`. It ends 0 when the draft is tagged, 1 at a
 conflict or a failed check, 2 when it could not run.
+
+## rhizoid bump
+
+```
+rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--push] [--pr] [--json]
+```
+
+Every pin of a graph in one place: each `[[tool]]` and `[[slice]]` follower, the file and value that pins it, and the
+newest release of its source. Without `now` it lists them and changes nothing (it ends 1 when one is behind). With
+`now`, each tool pin that is behind is bumped in its follower's clone: a branch `rhizoid/bump/TOOL-VERSION` from the
+graph's revision, in a fresh worktree; only the pinned value edited, the rest of the file as it was, and the edit read
+back before it is committed (a value that appears twice, or does not read back, is `refused`, left to a hand); the
+tool's `gate`, when it has one, passed before the commit (`gated-out` commits nothing); `--push` pushes the branch to
+the follower's `origin`, `--pr` also opens its pull request (`gh pr create --fill`). A branch already there is
+`branch-exists`. Slices are moved by `follow`, which lays their files: `bump` lists them, `moved_by=follow`. The
+follower's own checkout is never touched, and the worktree always goes.
+
+A tool pin is a TOML `key` or a `line` (as for `status`); a key whose value carries more than the version says how,
+and an attended pin names the check a bump must pass:
+
+```toml
+[[tool]]
+name = "lpoco-attended"
+source = "linux-phone-oco/lab-tools"
+tag_prefix = "lpoco-attended-v"
+pin = "procedures/steps/Cargo.toml"
+key = "dependencies.lpoco-attended.tag"
+value = "lpoco-attended-v{version}"           # a Cargo git dependency's tag
+gate = ["lpoco-attended", "check"]           # argv, run in the bumped worktree; any exit but 0 commits nothing
+followers = ["linux-phone-oco/google-walleye-lab"]
+```
+
+Its report is `pin.N.follower`, `pin.N.kind` (`tool` or `slice`), `pin.N.name`, `pin.N.file`, `pin.N.pinned`,
+`pin.N.latest`, `pin.N.state` (`current`, `behind`, `bumped`, `branch-exists`, `gated-out`, `refused`), and as it goes
+`pin.N.branch`, `pin.N.pushed`, `pin.N.pr`, `pin.N.gate.exit` and `pin.N.gate.output`, `pin.N.why`,
+`pin.N.moved_by` - or the same as JSON. With `now` it ends 0 when every tool pin is current or bumped, 1 when one
+was gated out or refused, 2 when it could not run. What installs a bumped pin on a machine (`lpoco-host follow` for
+`lab.toml`'s `lpoco`) is the follower's, not rhizoid's.
 
 Install at a release: the x86_64 Linux binary is attached to every release, with its sha256 beside it
 (`.github/workflows/assets.yml`):

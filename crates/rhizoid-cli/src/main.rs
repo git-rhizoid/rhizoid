@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAN_DATE: &str = "2026-11-23";
-const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), merge a named list of branches onto a base into a tag (rhizoid assemble), and draft the next series version of a branch for its upstream (rhizoid send-back)";
+const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), merge a named list of branches onto a base into a tag (rhizoid assemble), draft the next series version of a branch for its upstream (rhizoid send-back), and keep every pin in one place (rhizoid bump)";
 
 const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command { name: "init", summary: "Write a fresh rhizoid.toml" },
@@ -41,6 +41,10 @@ const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command {
         name: "send-back",
         summary: "Draft the next series version of a branch for its upstream: rebased, cut, range-diffed, checked, tagged as a draft",
+    },
+    generate::Command {
+        name: "bump",
+        summary: "Every pin of a graph in one place; with now, bump each tool pin behind on a branch",
     },
     generate::Command { name: "completions", summary: "Shell completions for rhizoid" },
     generate::Command { name: "man", summary: "The manual page, in roff" },
@@ -90,6 +94,7 @@ enum Request {
     Assemble(commands::assemble::Ask),
     AssembleDone { tag: String, repo: PathBuf, force: bool },
     SendBack(commands::send_back::Ask),
+    Bump(commands::bump::Ask),
     Completions(Shell),
     Man,
 }
@@ -157,6 +162,27 @@ fn request(r: &Resolution) -> Result<Request, String> {
                 force: Contract::FORCE.get_from(r).unwrap_or(false),
             }
         }
+        Command::Bump => Request::Bump(commands::bump::Ask {
+            graph: match Contract::GRAPH.get_from(r) {
+                Some(g) => g.into(),
+                None => current_dir()?.join(commands::status::GRAPH_FILE),
+            },
+            root: match Contract::ROOT.get_from(r).filter(|s| !s.is_empty()) {
+                Some(root) => root.into(),
+                None => commands::status::default_root(Contract::HOME.get_from(r).as_deref())?,
+            },
+            worktrees: match Contract::AGENT_WORKTREES.get_from(r).filter(|s| !s.is_empty()) {
+                Some(d) => d.into(),
+                None => {
+                    commands::assemble::default_worktrees(Contract::HOME.get_from(r).as_deref())?
+                }
+            },
+            now: Contract::ACTION.get_from(r).as_deref() == Some("now"),
+            push: Contract::PUSH.get_from(r).unwrap_or(false),
+            pr: Contract::PR.get_from(r).unwrap_or(false),
+            only: Contract::ONLY.get_from(r).filter(|s| !s.is_empty()),
+            json: Contract::JSON.get_from(r).unwrap_or(false),
+        }),
         Command::SendBack => Request::SendBack(commands::send_back::Ask {
             branch: Contract::BRANCH
                 .get_from(r)
@@ -255,6 +281,14 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Ok(Request::Bump(ask)) => match commands::bump::run(&ask) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("rhizoid: {e}");
+                ExitCode::from(2)
+            }
+        },
         Ok(Request::SendBack(ask)) => match commands::send_back::run(&ask) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,

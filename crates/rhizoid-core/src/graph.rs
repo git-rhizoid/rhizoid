@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// A repository as GitHub names it: `owner/repo`, nothing else.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, serde::Serialize)]
 #[serde(try_from = "String")]
 pub struct RepoName(String);
 
@@ -234,6 +234,8 @@ struct RawTool {
     pin: String,
     key: Option<String>,
     line: Option<String>,
+    value: Option<String>,
+    gate: Option<Vec<String>>,
     listed_in: Option<Listing>,
     followers: Vec<RepoName>,
 }
@@ -252,6 +254,10 @@ pub struct Tool {
     pub pin: String,
     /// How the version is read from that file.
     pub read: PinRead,
+    /// What a `key` holds around the version (`lpoco-attended-v{version}` for a Cargo git tag): before and after.
+    pub value: (String, String),
+    /// A command a bump must pass before it is committed (argv, run in the follower's worktree): an attended pin's check.
+    pub gate: Option<Vec<String>>,
     /// A list of the repositories whose pin a job moves; a follower not on it moves its pin by hand.
     pub listed_in: Option<Listing>,
     /// The repositories that pin it.
@@ -269,12 +275,30 @@ impl TryFrom<RawTool> for Tool {
             },
             _ => return Err(format!("tool {}: give exactly one of `key` and `line`", r.name)),
         };
+        let value = match (&read, r.value.as_deref()) {
+            (_, None) => (String::new(), String::new()),
+            (PinRead::Key(_), Some(v)) => match v.split_once("{version}") {
+                Some((b, a)) if !a.contains("{version}") => (b.to_string(), a.to_string()),
+                _ => return Err(format!("tool {}: `value` needs one {{version}}", r.name)),
+            },
+            (PinRead::Line { .. }, Some(_)) => {
+                return Err(format!(
+                    "tool {}: `value` goes with `key`; a `line` says its own",
+                    r.name
+                ))
+            }
+        };
+        if r.gate.as_ref().is_some_and(|g| g.is_empty()) {
+            return Err(format!("tool {}: `gate` is a command: argv, not empty", r.name));
+        }
         Ok(Tool {
             name: r.name,
             source: r.source,
             tag_prefix: r.tag_prefix,
             pin: r.pin,
             read,
+            value,
+            gate: r.gate,
             listed_in: r.listed_in,
             followers: r.followers,
         })

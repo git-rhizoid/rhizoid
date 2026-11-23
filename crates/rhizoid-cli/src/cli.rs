@@ -12,6 +12,7 @@
 //!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
 //!   rhizoid assemble --done TAG [--repo DIR] [--force]  end a tag's worktree
 //!   rhizoid send-back BRANCH --onto REF --out DIR [--config FILE] [--tested SHA] [--fork ID] [--repo DIR] [--json]
+//!   rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--push] [--pr] [--json]   every pin in one place; now bumps
 //!   rhizoid completions SHELL | man | --version | --help
 //! ```
 
@@ -30,6 +31,7 @@ pub enum Command {
     Assemble,
     #[serde(rename = "send-back")]
     SendBack,
+    Bump,
     Completions,
     Man,
 }
@@ -45,6 +47,7 @@ impl Command {
         "status",
         "assemble",
         "send-back",
+        "bump",
         "completions",
         "man",
     ];
@@ -65,6 +68,7 @@ impl FromRaw for Command {
             "status" => Command::Status,
             "assemble" => Command::Assemble,
             "send-back" => Command::SendBack,
+            "bump" => Command::Bump,
             "completions" => Command::Completions,
             "man" => Command::Man,
             _ => return None,
@@ -142,7 +146,7 @@ contract! {
     GRAPH: String, Command = Input {
         key: "graph",
         ty: Type::String,
-        subcommands: &[Command::Status],
+        subcommands: &[Command::Status, Command::Bump],
         env: Some(Env::new("RHIZOID_GRAPH")),
         arg: Some(Arg { value_name: "FILE", ..Arg::long("graph") }),
         summary: "The graph file: the edges to read (rhizoid.graph.toml here when none is given).",
@@ -152,7 +156,7 @@ contract! {
     ROOT: String, Command = Input {
         key: "root",
         ty: Type::String,
-        subcommands: &[Command::Status],
+        subcommands: &[Command::Status, Command::Bump],
         env: Some(Env::new("RHIZOID_ROOT")),
         arg: Some(Arg { value_name: "DIR", ..Arg::long("root") }),
         summary: "The folder the clones are under (~/Projects when none is given).",
@@ -181,7 +185,7 @@ contract! {
         key: "json",
         ty: Type::Bool,
         default: Some(false),
-        subcommands: &[Command::Status, Command::Assemble, Command::SendBack],
+        subcommands: &[Command::Status, Command::Assemble, Command::SendBack, Command::Bump],
         arg: Some(Arg::long("json")),
         summary: "Print the report as JSON (status: the findings; assemble: the recipe and the outcome; send-back: the series).",
         ..Input::EMPTY
@@ -295,6 +299,45 @@ contract! {
         subcommands: &[Command::SendBack],
         arg: Some(Arg { value_name: "ID", ..Arg::long("fork") }),
         summary: "The fork's id among the caller's upstreams: printed as carried-in=ID/BRANCH.",
+        ..Input::EMPTY
+    };
+
+    ACTION: String, Command = Input {
+        key: "action",
+        ty: Type::Enum,
+        allowed: &["now"],
+        subcommands: &[Command::Bump],
+        arg: Some(Arg { value_name: "now", ..Arg::positional(0) }),
+        summary: "Bump now: without it, bump only lists every pin and what it would do.",
+        ..Input::EMPTY
+    };
+
+    ONLY: String, Command = Input {
+        key: "only",
+        ty: Type::String,
+        subcommands: &[Command::Bump],
+        arg: Some(Arg { value_name: "REPO", ..Arg::long("only") }),
+        summary: "Only this follower's pins (owner/repo).",
+        ..Input::EMPTY
+    };
+
+    PUSH: bool, Command = Input {
+        key: "push",
+        ty: Type::Bool,
+        default: Some(false),
+        subcommands: &[Command::Bump],
+        arg: Some(Arg::long("push")),
+        summary: "Push each bump's branch to the follower's origin.",
+        ..Input::EMPTY
+    };
+
+    PR: bool, Command = Input {
+        key: "pr",
+        ty: Type::Bool,
+        default: Some(false),
+        subcommands: &[Command::Bump],
+        arg: Some(Arg::long("pr")),
+        summary: "Push each bump's branch and open its pull request (gh pr create --fill).",
         ..Input::EMPTY
     };
 

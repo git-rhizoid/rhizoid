@@ -110,6 +110,12 @@ pub trait GitPort {
     /// Delete the tag `name` (`git tag -d`).
     fn delete_tag(&self, name: &str) -> Result<(), PortError>;
 
+    /// Commit every tracked change in the worktree at `path` with `message`.
+    fn commit_all(&self, path: &std::path::Path, message: &str) -> Result<(), PortError>;
+
+    /// Push `branch` from the worktree at `path` to `origin`, never forced.
+    fn push(&self, path: &std::path::Path, branch: &str) -> Result<(), PortError>;
+
     /// Delete the local branch `name` (`git branch -D`).
     fn delete_branch(&self, name: &str) -> Result<(), PortError>;
 

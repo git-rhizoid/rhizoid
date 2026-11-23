@@ -9,6 +9,7 @@ pub mod integration;
 pub mod manifest;
 pub mod module;
 pub mod pattern;
+pub mod pins;
 pub mod ports;
 pub mod repos;
 pub mod sendback;
