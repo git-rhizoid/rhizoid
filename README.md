@@ -39,6 +39,7 @@ tags, against what the graph gives it - every name is the graph's, none is rhizo
 [[integration]]
 repo = "acme/app"
 release_prefix = "v"                     # release tags: this, then a digit (v1.4, v1.5-rc2); always in the scheme
+releases = "acme/upstream"               # where releases come from: its tags, read with git ls-remote (no objects)
 topics = ["feature/ITEM", "fix/ITEM/BASE"]   # the branches lists merge; BASE says what one is based on
 assembled = "candidate/LIST/N"           # the shape of the tags assemble makes here
 scheme = { branches = ["main", "feature/ITEM", "fix/ITEM/BASE"], tags = ["candidate/LIST/N"] }
@@ -51,8 +52,8 @@ example. Each check runs only when the edge gives what it needs:
 | check | needs | current | otherwise |
 |---|---|---|---|
 | `name-scheme` | `scheme` | every local branch and tag fits it | `moved-by-hand`: one finding for the branches outside it and one for the tags, the first ten named and the rest counted |
-| `topic-base` | `topics` | a topic is on the newest release (a stable point release counts, a release candidate does not), or on the BASE its name says | `behind` (the release it is on), `moved-by-hand` (off its BASE) |
-| `branch-origin` | `topics` | every local topic branch is `origin`'s | `behind`: assemble would take the stale local one; `moved-by-hand`: commits `origin` lacks, or diverged |
+| `topic-base` | `topics`, and `releases` for the newest | a topic is on the newest release of `releases` (a stable point release counts, a release candidate does not), or on the BASE its name says | `behind` (the release it is on; the newest may not be in the clone yet), `moved-by-hand` (off its BASE); `not-known-yet` when no `releases` is named |
+| `branch-origin` | `topics` | every local topic branch is `origin`'s, asked of `origin` itself (`git ls-remote`), so a clone that tracks only some branches still gets an answer | `behind`: assemble would take the stale local one (or `origin`'s commit is not fetched yet); `moved-by-hand`: commits `origin` lacks, diverged, or a topic only in this clone; `not-known-yet` when `origin` cannot be asked |
 | `recipe` | - | the newest tag of each assembled list and base: its recipe, read back from its message, names every branch where it is now | `behind`: a branch moved or is gone, so assemble again; `moved-by-hand`: a tag of the `assembled` shape with no recipe (made by hand) |
 | `worktree-tag` | - | each worktree assemble locked has its tag's tree and no change | `moved-by-hand`: a different tree, a change, or a tag that was never made; `behind`: an unlocked worktree in a `rhizoid` home, left at a conflict |
 

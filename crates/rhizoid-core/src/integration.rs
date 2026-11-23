@@ -8,7 +8,7 @@
 
 use crate::assemble::{assembled_for, recipe_of};
 use crate::finding::{Check, Finding, Verdict};
-use crate::graph::RepoName;
+use crate::graph::{Remote, RepoName};
 use crate::pattern::Pattern;
 use crate::repos::RepoError;
 use crate::text::release_number;
@@ -32,6 +32,9 @@ pub struct Integration {
     pub topics: Vec<Pattern>,
     /// The name of the tags assemble makes here: a tag of that shape without a recipe was made by hand.
     pub assembled: Option<Pattern>,
+    /// Where releases come from (`torvalds/linux`, a URL): its tags are read with `git ls-remote`, which costs no
+    /// objects. With none, a topic's base against the newest release is not known yet.
+    pub releases: Option<Remote>,
 }
 
 fn default_release_prefix() -> String {
@@ -80,6 +83,17 @@ pub trait IntegrationReads {
         rev: &str,
         prefix: &str,
     ) -> Result<Option<String>, RepoError>;
+    /// A remote's refs under `namespace` (`refs/heads/`), without it, each with its commit (a tag peeled), asked
+    /// with `git ls-remote` from the clone: `remote` is a remote's name (`origin`) or a URL. `Err` says why it
+    /// could not be asked.
+    fn ls_remote(
+        &self,
+        repo: &RepoName,
+        remote: &str,
+        namespace: &str,
+    ) -> Result<Result<Vec<(String, String)>, String>, RepoError>;
+    /// Whether the clone has the commit `sha`.
+    fn has_commit(&self, repo: &RepoName, sha: &str) -> Result<bool, RepoError>;
     /// Whether the trees of `a` and `b` are the same.
     fn tree_equal(&self, repo: &RepoName, a: &str, b: &str) -> Result<bool, RepoError>;
     /// The clone's worktrees.
@@ -148,12 +162,10 @@ impl<'a> Clone<'a> {
             .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
     }
 
-    /// The newest release tag: the highest version; release candidates (`-rcN`) do not count, a stable point
-    /// release (`v6.18.5`) does.
-    fn newest_release(&self) -> Option<&str> {
-        self.tags
-            .keys()
-            .filter(|t| self.is_release(t) && !t.contains("-rc"))
+    /// The newest release among `tags`: the highest version; release candidates (`-rcN`) do not count, a stable
+    /// point release (`v6.18.5`) does.
+    fn newest_of<'t>(&self, tags: impl Iterator<Item = &'t String>) -> Option<&'t str> {
+        tags.filter(|t| self.is_release(t) && !t.contains("-rc"))
             .max_by_key(|t| release_order(t, &self.edge.release_prefix))
             .map(String::as_str)
     }
@@ -208,11 +220,38 @@ impl<'a> Clone<'a> {
     }
 
     fn topics(&self, out: &mut Vec<Finding>) -> Result<(), RepoError> {
-        let newest = self.newest_release();
-        for (branch, sha, pattern) in self.topic_branches() {
-            out.push(match pattern.base_of(branch) {
-                Some(base) => self.on_named_base(branch, sha, base)?,
-                None => self.on_newest(branch, sha, newest)?,
+        let topics: Vec<_> = self.topic_branches().collect();
+        if topics.is_empty() {
+            return Ok(());
+        }
+        let releases = match &self.edge.releases {
+            None => Err(format!(
+                "where releases come from is not named (releases = \"owner/repo\" in the edge); the clone's own newest is {}",
+                self.newest_of(self.tags.keys()).unwrap_or("none")
+            )),
+            Some(source) => match self.git.ls_remote(self.repo(), &source.url(), "refs/tags/")? {
+                Err(why) => Err(format!("{source}'s releases could not be read: {why}")),
+                Ok(tags) => {
+                    let tags: BTreeMap<String, String> = tags.into_iter().collect();
+                    match self.newest_of(tags.keys()) {
+                        Some(newest) => Ok((newest.to_string(), tags[newest].clone())),
+                        None => Err(format!("{source} has no release tagged {}N", self.edge.release_prefix)),
+                    }
+                }
+            },
+        };
+        for (branch, sha, pattern) in topics {
+            out.push(match (pattern.base_of(branch), &releases) {
+                (Some(base), _) => self.on_named_base(branch, sha, base)?,
+                (None, Ok((newest, newest_sha))) => {
+                    self.on_newest(branch, sha, newest, newest_sha)?
+                }
+                (None, Err(why)) => self.finding(
+                    Check::TopicBase,
+                    "upstream",
+                    Verdict::NotKnownYet,
+                    format!("{branch}: {why}"),
+                ),
             });
         }
         Ok(())
@@ -222,17 +261,11 @@ impl<'a> Clone<'a> {
         &self,
         branch: &str,
         sha: &str,
-        newest: Option<&str>,
+        newest: &str,
+        newest_sha: &str,
     ) -> Result<Finding, RepoError> {
-        let Some(newest) = newest else {
-            return Ok(self.finding(
-                Check::TopicBase,
-                "upstream",
-                Verdict::NotKnownYet,
-                format!("{branch}: the clone has no release tag to read it against"),
-            ));
-        };
-        if self.git.is_ancestor(self.repo(), &self.tags[newest], sha)? {
+        let have_it = self.git.has_commit(self.repo(), newest_sha)?;
+        if have_it && self.git.is_ancestor(self.repo(), newest_sha, sha)? {
             return Ok(self.finding(
                 Check::TopicBase,
                 newest,
@@ -240,18 +273,19 @@ impl<'a> Clone<'a> {
                 format!("{branch} is on {newest}, the newest release"),
             ));
         }
+        let missing = if have_it { "" } else { " (not in the clone yet)" };
         Ok(match self.git.nearest_release(self.repo(), sha, &self.edge.release_prefix)? {
             Some(base) => self.finding(
                 Check::TopicBase,
                 newest,
                 Verdict::Behind,
-                format!("{branch} is on {base}; the newest release is {newest}"),
+                format!("{branch} is on {base}; the newest release is {newest}{missing}"),
             ),
             None => self.finding(
                 Check::TopicBase,
                 newest,
                 Verdict::NotKnownYet,
-                format!("{branch} has no release under it (a fork commit?); the newest release is {newest}"),
+                format!("{branch} has no release under it (a fork commit?); the newest release is {newest}{missing}"),
             ),
         })
     }
@@ -284,18 +318,48 @@ impl<'a> Clone<'a> {
         })
     }
 
-    /// A topic branch whose local commit is not `origin`'s: assemble takes the local one, so it must be said.
+    /// A topic branch whose local commit is not `origin`'s, asked of `origin` itself (a clone may track only some
+    /// of its branches): assemble takes the local one, so it must be said.
     fn against_origin(&self, out: &mut Vec<Finding>) -> Result<(), RepoError> {
-        let mut equal = 0;
-        for (branch, local, _) in self.topic_branches() {
-            let Some(theirs) = self.origin.get(branch) else { continue };
+        let topics: Vec<_> = self.topic_branches().collect();
+        if topics.is_empty() {
+            return Ok(());
+        }
+        let theirs: BTreeMap<String, String> =
+            match self.git.ls_remote(self.repo(), "origin", "refs/heads/")? {
+                Ok(heads) => heads.into_iter().collect(),
+                Err(why) => {
+                    out.push(self.finding(
+                        Check::BranchOrigin,
+                        "origin",
+                        Verdict::NotKnownYet,
+                        format!("origin could not be asked: {why}"),
+                    ));
+                    return Ok(());
+                }
+            };
+        let (mut equal, mut only_local) = (Vec::new(), Vec::new());
+        for (branch, local, _) in topics {
+            let source = format!("origin/{branch}");
+            let Some(theirs) = theirs.get(branch.as_str()) else {
+                only_local.push(branch.as_str());
+                continue;
+            };
             if theirs == local {
-                equal += 1;
+                equal.push(branch.as_str());
+                continue;
+            }
+            if !self.git.has_commit(self.repo(), theirs)? {
+                out.push(self.finding(
+                    Check::BranchOrigin,
+                    &source,
+                    Verdict::Behind,
+                    format!("{branch} is not origin's, whose commit the clone does not have (fetch it): assemble would take the local one"),
+                ));
                 continue;
             }
             let ahead = self.git.count(self.repo(), theirs, local)?;
             let behind = self.git.count(self.repo(), local, theirs)?;
-            let source = format!("origin/{branch}");
             out.push(match (ahead, behind) {
                 (0, n) => self.finding(
                     Check::BranchOrigin,
@@ -317,12 +381,24 @@ impl<'a> Clone<'a> {
                 ),
             });
         }
-        if equal > 0 {
+        if !only_local.is_empty() {
+            out.push(self.finding(
+                Check::BranchOrigin,
+                "origin",
+                Verdict::MovedByHand,
+                format!(
+                    "{} topic branches are only in this clone, not on origin: {}",
+                    only_local.len(),
+                    only_local.join(", ")
+                ),
+            ));
+        }
+        if !equal.is_empty() {
             out.push(self.finding(
                 Check::BranchOrigin,
                 "origin",
                 Verdict::Current,
-                format!("{equal} topic branches are origin's"),
+                format!("{} topic branches are origin's", equal.len()),
             ));
         }
         Ok(())

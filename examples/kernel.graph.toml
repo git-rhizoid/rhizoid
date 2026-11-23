@@ -8,6 +8,7 @@
 [[integration]]
 repo = "grenudi/linux"
 release_prefix = "v"                        # v6.18, v6.18-rc3, v6.18.5: always in the scheme
+releases = "torvalds/linux"                # where releases come from: mainline's tags, read with git ls-remote
 topics = ["topic/ITEM", "backport/ITEM/BASE"]   # what lists merge: on the newest release, or on BASE; equal to origin's
 assembled = "int/NAME/LIST/BASE/N"          # the tags assemble makes here: one of this shape without a recipe was made by hand
 
