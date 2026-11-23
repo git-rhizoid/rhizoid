@@ -186,6 +186,9 @@ pub struct Pin {
     /// The tool, for a tool pin: where to find it in the graph.
     #[serde(skip)]
     pub tool: Option<usize>,
+    /// The slice, for a slice pin: where to find it in the graph.
+    #[serde(skip)]
+    pub slice: Option<usize>,
 }
 
 impl Pin {
@@ -216,10 +219,11 @@ pub fn plan(graph: &crate::Graph, repos: &dyn crate::Repos) -> Result<Vec<Pin>, 
                 pinned: read_pin(t, f, &text)?,
                 latest: newest.clone(),
                 tool: Some(i),
+                slice: None,
             });
         }
     }
-    for s in &graph.slices {
+    for (i, s) in graph.slices.iter().enumerate() {
         let newest = latest(&s.source, &s.tag_prefix)?;
         for f in &s.followers {
             let text = repos.file(f, rev, &s.pin)?.unwrap_or_default();
@@ -234,6 +238,7 @@ pub fn plan(graph: &crate::Graph, repos: &dyn crate::Repos) -> Result<Vec<Pin>, 
                 pinned: table.get("version").and_then(|v| v.as_str()).map(str::to_string),
                 latest: newest.clone(),
                 tool: None,
+                slice: Some(i),
             });
         }
     }
@@ -286,29 +291,207 @@ pub fn bump(
 ) -> Result<Bumped, crate::PortError> {
     let old = pin.pinned.clone().unwrap_or_default();
     let branch = format!("rhizoid/bump/{}-{}", tool.name, pin.latest);
+    on_branch(git, at, pin, &branch, |worktree| {
+        let path = worktree.join(&pin.file);
+        let io = |e: std::io::Error| crate::PortError(format!("{}: {e}", path.display()));
+        let text = std::fs::read_to_string(&path).map_err(io)?;
+        let edited = match edit_pin(tool, &text, &old, &pin.latest) {
+            Ok(t) => t,
+            Err(why) => return Ok(Bumped::Refused { why }),
+        };
+        std::fs::write(&path, edited).map_err(io)?;
+        if let Some(out) = gated(cmd, tool.gate.as_deref(), worktree)? {
+            return Ok(out);
+        }
+        // the commit is the pin and what the tool names in `also`: a gate that changed anything else is refused
+        let others: Vec<String> = git
+            .changed_files(worktree)?
+            .into_iter()
+            .filter(|f| *f != pin.file && !tool.also.contains(f))
+            .collect();
+        if !others.is_empty() {
+            return Ok(Bumped::Refused {
+                why: format!(
+                    "the bump changed more than the pin and its `also`: {}",
+                    others.join(", ")
+                ),
+            });
+        }
+        let mut files = vec![pin.file.clone()];
+        files.extend(tool.also.iter().filter(|f| worktree.join(f).exists()).cloned());
+        let message = format!("chore(deps): {} {old} -> {}", tool.name, pin.latest);
+        commit_push_pr(git, cmd, at, worktree, &branch, &files, &message)
+    })
+}
+
+/// Bump one slice pin to its source's newest release in the follower's clone: a branch from the graph's
+/// revision, in a fresh worktree, the release laid by `follow` (as idealkb's follow.sh lays it, the pin moved
+/// with it); a follower that changed a generic file is left for a hand, as update-pins leaves it; the slice's
+/// gate, when it has one, passed; every file follow laid committed. The worktree always goes.
+#[allow(clippy::too_many_arguments)]
+pub fn bump_slice(
+    git: &impl crate::GitPort,
+    source_git: &impl crate::GitPort,
+    cmd: &impl crate::CommandPort,
+    slice: &crate::graph::Slice,
+    source: &std::path::Path,
+    pin: &Pin,
+    at: &BumpAt,
+) -> Result<Bumped, crate::PortError> {
+    let old = pin.pinned.clone().unwrap_or_else(|| "none".to_string());
+    let branch = format!("rhizoid/bump/{}-{}", slice.source.as_str().replace('/', "-"), pin.latest);
+    if slice.tag_prefix != "v" {
+        return Ok(Bumped::Refused {
+            why: format!(
+                "follow lays releases tagged vVERSION; {} tags {}VERSION",
+                slice.source, slice.tag_prefix
+            ),
+        });
+    }
+    // what follow would write must stay in the follower: no absolute or climbing path in the release's list
+    let generic = String::from_utf8_lossy(
+        &source_git.show(&format!("v{}", pin.latest), "generic")?.unwrap_or_default(),
+    )
+    .into_owned();
+    let escapes = |p: &str| p.starts_with('/') || p.split('/').any(|part| part == "..");
+    let named: Vec<&str> = generic
+        .lines()
+        .flat_map(|l| match l.strip_prefix("#! pin = ").or_else(|| l.strip_prefix("#! from = ")) {
+            Some(v) => vec![v],
+            None if l.trim_start().starts_with('#') => vec![],
+            None => l.split_whitespace().collect(),
+        })
+        .collect();
+    if let Some(bad) = named.iter().find(|p| escapes(p)) {
+        return Ok(Bumped::Refused {
+            why: format!(
+                "{} {}'s generic names {bad}, outside the follower: not laid",
+                slice.source, pin.latest
+            ),
+        });
+    }
+    on_branch(git, at, pin, &branch, |worktree| {
+        let laid = crate::follow::follow(source_git, cmd, source, worktree, &pin.latest)?;
+        match laid.code {
+            0 => {}
+            3 => {
+                return Ok(Bumped::Refused {
+                    why: format!(
+                    "the follower changed a generic file: left for a hand to look at (follow: {})",
+                    laid.said.lines().find(|l| l.contains("replaced")).unwrap_or("")
+                ),
+                })
+            }
+            code => {
+                let why = laid.complained.trim();
+                let why = if why.is_empty() { laid.said.lines().last().unwrap_or("") } else { why };
+                return Ok(Bumped::Refused { why: format!("follow ended {code}: {why}") });
+            }
+        }
+        // the graph's pin must be the one follow moved
+        let moved = std::fs::read_to_string(worktree.join(&slice.pin)).unwrap_or_default();
+        if !moved.lines().any(|l| l == format!("version = \"{}\"", pin.latest)) {
+            return Ok(Bumped::Refused {
+                why: format!(
+                    "follow did not move {} to {}: the source's generic names another pin file",
+                    slice.pin, pin.latest
+                ),
+            });
+        }
+        let files = git.changed_files(worktree)?;
+        if let Some(out) = gated(cmd, slice.gate.as_deref(), worktree)? {
+            return Ok(out);
+        }
+        // the commit is what follow laid: a gate that changed more is refused, not swept in
+        let after = git.changed_files(worktree)?;
+        let more: Vec<&String> = after.iter().filter(|f| !files.contains(f)).collect();
+        if !more.is_empty() {
+            return Ok(Bumped::Refused {
+                why: format!(
+                    "the gate changed more than follow laid: {}",
+                    more.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+            });
+        }
+        let message = format!("chore(deps): follow {} {old} -> {}", slice.source, pin.latest);
+        commit_push_pr(git, cmd, at, worktree, &branch, &files, &message)
+    })
+}
+
+/// Run a change on a fresh branch of the follower's clone, from the graph's revision, in a worktree of its own:
+/// refused when the branch is there already (here or on origin); the branch kept once committed, dropped when the
+/// change ends otherwise; the worktree always removed.
+fn on_branch(
+    git: &impl crate::GitPort,
+    at: &BumpAt,
+    pin: &Pin,
+    branch: &str,
+    change: impl FnOnce(&std::path::Path) -> Result<Bumped, crate::PortError>,
+) -> Result<Bumped, crate::PortError> {
     let here = git.commit(&format!("refs/heads/{branch}"))?.is_some();
     if here || git.commit(&format!("refs/remotes/origin/{branch}"))?.is_some() {
-        return Ok(Bumped::BranchExists { branch });
+        return Ok(Bumped::BranchExists { branch: branch.to_string() });
     }
     let base = git.commit(at.rev)?.ok_or_else(|| {
         crate::PortError(format!("{}: no {} in the clone (fetch it)", pin.follower, at.rev))
     })?;
     let worktree = at.home.join(branch.replace('/', "-"));
-    git.add_branch_worktree(&worktree, &branch, &base)?;
-    let outcome = edit_gate_commit(git, cmd, tool, pin, at, &worktree, &branch, &old);
+    git.add_branch_worktree(&worktree, branch, &base)?;
+    let outcome = change(&worktree);
     let _ = git.remove_worktree(&worktree);
     match outcome {
         // once committed, the branch is kept: pushed or not, it is the bump
         Ok(b @ Bumped::Bumped { .. }) => Ok(b),
         Ok(other) => {
-            git.delete_branch(&branch)?;
+            git.delete_branch(branch)?;
             Ok(other)
         }
         Err(e) => {
-            let _ = git.delete_branch(&branch);
+            let _ = git.delete_branch(branch);
             Err(e)
         }
     }
+}
+
+/// A gate's verdict: `None` when it passed (or there is none), the gated-out outcome when it did not.
+fn gated(
+    cmd: &impl crate::CommandPort,
+    gate: Option<&[String]>,
+    worktree: &std::path::Path,
+) -> Result<Option<Bumped>, crate::PortError> {
+    let Some(gate) = gate else { return Ok(None) };
+    let (exit, stdout, stderr) = cmd.run(gate, worktree)?;
+    Ok((exit != Some(0)).then(|| Bumped::GatedOut { exit, output: format!("{stdout}{stderr}") }))
+}
+
+/// Commit these files with `message`; push and open the pull request when asked. A pull request that fails
+/// after the push keeps the branch and says why.
+fn commit_push_pr(
+    git: &impl crate::GitPort,
+    cmd: &impl crate::CommandPort,
+    at: &BumpAt,
+    worktree: &std::path::Path,
+    branch: &str,
+    files: &[String],
+    message: &str,
+) -> Result<Bumped, crate::PortError> {
+    git.commit_files(worktree, files, message)?;
+    let pushed = at.push || at.pr.is_some();
+    if pushed {
+        git.push(worktree, branch)?;
+    }
+    let (mut pr, mut pr_error) = (None, None);
+    if let Some(command) = at.pr {
+        let argv: Vec<String> = command.iter().map(|a| a.replace("{branch}", branch)).collect();
+        match cmd.run(&argv, worktree) {
+            Ok((Some(0), stdout, _)) => pr = Some(stdout.trim().to_string()),
+            Ok((_, stdout, stderr)) => {
+                pr_error = Some(format!("{stdout}{stderr}").trim().to_string())
+            }
+            Err(e) => pr_error = Some(e.0),
+        }
+    }
+    Ok(Bumped::Bumped { branch: branch.to_string(), pushed, pr, pr_error })
 }
 
 /// Where a bump happens and how far it goes.
@@ -321,72 +504,6 @@ pub struct BumpAt<'a> {
     pub push: bool,
     /// The pull request command (argv, `{branch}` in it replaced), run once pushed.
     pub pr: Option<&'a [String]>,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn edit_gate_commit(
-    git: &impl crate::GitPort,
-    cmd: &impl crate::CommandPort,
-    tool: &Tool,
-    pin: &Pin,
-    at: &BumpAt,
-    worktree: &std::path::Path,
-    branch: &str,
-    old: &str,
-) -> Result<Bumped, crate::PortError> {
-    let path = worktree.join(&pin.file);
-    let io = |e: std::io::Error| crate::PortError(format!("{}: {e}", path.display()));
-    let text = std::fs::read_to_string(&path).map_err(io)?;
-    let edited = match edit_pin(tool, &text, old, &pin.latest) {
-        Ok(t) => t,
-        Err(why) => return Ok(Bumped::Refused { why }),
-    };
-    std::fs::write(&path, edited).map_err(io)?;
-    if let Some(gate) = &tool.gate {
-        let (exit, stdout, stderr) = cmd.run(gate, worktree)?;
-        if exit != Some(0) {
-            return Ok(Bumped::GatedOut { exit, output: format!("{stdout}{stderr}") });
-        }
-    }
-    // the commit is the pin and what the tool names in `also`: a gate that changed anything else is refused
-    let others: Vec<String> = git
-        .changed_files(worktree)?
-        .into_iter()
-        .filter(|f| *f != pin.file && !tool.also.contains(f))
-        .collect();
-    if !others.is_empty() {
-        return Ok(Bumped::Refused {
-            why: format!(
-                "the bump changed more than the pin and its `also`: {}",
-                others.join(", ")
-            ),
-        });
-    }
-    let mut files = vec![pin.file.clone()];
-    files.extend(tool.also.iter().filter(|f| worktree.join(f).exists()).cloned());
-    git.commit_files(
-        worktree,
-        &files,
-        &format!("chore(deps): {} {old} -> {}", tool.name, pin.latest),
-    )?;
-    let pushed = at.push || at.pr.is_some();
-    let mut bumped =
-        Bumped::Bumped { branch: branch.to_string(), pushed: false, pr: None, pr_error: None };
-    if pushed {
-        git.push(worktree, branch)?;
-        bumped =
-            Bumped::Bumped { branch: branch.to_string(), pushed: true, pr: None, pr_error: None };
-    }
-    if let Some(command) = at.pr {
-        let argv: Vec<String> = command.iter().map(|a| a.replace("{branch}", branch)).collect();
-        let (pr, pr_error) = match cmd.run(&argv, worktree) {
-            Ok((Some(0), stdout, _)) => (Some(stdout.trim().to_string()), None),
-            Ok((_, stdout, stderr)) => (None, Some(format!("{stdout}{stderr}").trim().to_string())),
-            Err(e) => (None, Some(e.0)),
-        };
-        bumped = Bumped::Bumped { branch: branch.to_string(), pushed: true, pr, pr_error };
-    }
-    Ok(bumped)
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@
 
 use crate::git_cli::{GitCli, Programs};
 use crate::git_repos::GitRepos;
-use rhizoid_core::pins::{bump, plan, BumpAt, Bumped, Kind, Pin};
+use rhizoid_core::pins::{bump, bump_slice, plan, BumpAt, Bumped, Kind, Pin};
 use rhizoid_core::Graph;
 use std::path::PathBuf;
 
@@ -64,7 +64,7 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
             error: None,
             pin,
         };
-        if ask.now && row.pin.kind == Kind::Tool && !row.pin.current() {
+        if ask.now && !row.pin.current() {
             // one pin's failure is its own: the others are still bumped, and every one is reported
             match bump_one(ask, &graph, &row.pin) {
                 Ok(outcome) => {
@@ -88,13 +88,11 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
     Ok(rows.iter().all(|r| match r.state {
         "current" | "branch-exists" => true,
         "bumped" => !matches!(&r.bump, Some(Bumped::Bumped { pr_error: Some(_), .. })),
-        "behind" => ask.now && r.pin.kind == Kind::Slice,
         _ => false,
     }))
 }
 
 fn bump_one(ask: &Ask, graph: &Graph, pin: &Pin) -> Result<Bumped, String> {
-    let tool = &graph.tools[pin.tool.expect("a tool pin names its tool")];
     let clone = ask.root.join(graph.clone_path(&pin.follower));
     let git = GitCli::new(&clone);
     let main = git.main_clone().map_err(|e| e.to_string())?;
@@ -106,7 +104,18 @@ fn bump_one(ask: &Ask, graph: &Graph, pin: &Pin) -> Result<Bumped, String> {
         push: ask.push,
         pr: ask.pr.then_some(pr.as_slice()),
     };
-    bump(&git, &Programs, tool, pin, &at).map_err(|e| e.to_string())
+    match (pin.tool, pin.slice) {
+        (Some(t), _) => bump(&git, &Programs, &graph.tools[t], pin, &at).map_err(|e| e.to_string()),
+        (None, Some(s)) => {
+            let slice = &graph.slices[s];
+            let source = ask.root.join(graph.clone_path(&slice.source));
+            let source =
+                std::fs::canonicalize(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+            bump_slice(&git, &GitCli::new(&source), &Programs, slice, &source, pin, &at)
+                .map_err(|e| e.to_string())
+        }
+        (None, None) => Err("a pin names neither a tool nor a slice".to_string()),
+    }
 }
 
 fn render(rows: &[Row], json: bool) -> String {
@@ -130,9 +139,6 @@ fn render(rows: &[Row], json: bool) -> String {
         put(k("pinned"), r.pin.pinned.as_deref().unwrap_or("none"));
         put(k("latest"), &r.pin.latest);
         put(k("state"), r.state);
-        if r.pin.kind == Kind::Slice && r.state == "behind" {
-            put(k("moved_by"), "follow");
-        }
         match &r.bump {
             Some(Bumped::Bumped { branch, pushed, pr, pr_error }) => {
                 put(k("branch"), branch);
