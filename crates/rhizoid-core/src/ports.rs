@@ -110,8 +110,13 @@ pub trait GitPort {
     /// Delete the tag `name` (`git tag -d`).
     fn delete_tag(&self, name: &str) -> Result<(), PortError>;
 
-    /// Commit every tracked change in the worktree at `path` with `message`.
-    fn commit_all(&self, path: &std::path::Path, message: &str) -> Result<(), PortError>;
+    /// Commit these files (changed or new) in the worktree at `path` with `message`, and nothing else.
+    fn commit_files(
+        &self,
+        path: &std::path::Path,
+        files: &[String],
+        message: &str,
+    ) -> Result<(), PortError>;
 
     /// The paths changed in the worktree at `path`, tracked or not (`git status --porcelain`).
     fn changed_files(&self, path: &std::path::Path) -> Result<Vec<String>, PortError>;

@@ -301,3 +301,20 @@ fn a_failed_pull_request_keeps_the_pushed_branch_and_says_so() {
     let again = w.bump(&["now", "--only", "acme/lab"]);
     assert_eq!(value(&again, "pin.1.state").as_deref(), Some("branch-exists"));
 }
+
+#[test]
+fn what_the_gate_may_change_is_committed_with_the_pin() {
+    let w = world(r#"["sh", "-c", "echo 'tag = 0.2.0' > steps/Cargo.lock"]"#);
+    let graph = std::fs::read_to_string(&w.graph).unwrap();
+    std::fs::write(
+        &w.graph,
+        graph.replace("gate = [\"sh\"", "also = [\"steps/Cargo.lock\"]\ngate = [\"sh\""),
+    )
+    .unwrap();
+    let out = w.bump(&["now", "--only", "acme/lab"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(value(&out, "pin.2.state").as_deref(), Some("bumped"));
+    let files =
+        git(&w.lab, &["diff", "--name-only", "origin/main", "rhizoid/bump/lpoco-attended-0.2.0"]);
+    assert_eq!(files, "steps/Cargo.lock\nsteps/Cargo.toml");
+}

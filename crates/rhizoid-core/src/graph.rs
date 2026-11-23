@@ -236,6 +236,8 @@ struct RawTool {
     line: Option<String>,
     value: Option<String>,
     gate: Option<Vec<String>>,
+    #[serde(default)]
+    also: Vec<String>,
     listed_in: Option<Listing>,
     followers: Vec<RepoName>,
 }
@@ -258,6 +260,8 @@ pub struct Tool {
     pub value: (String, String),
     /// A command a bump must pass before it is committed (argv, run in the follower's worktree): an attended pin's check.
     pub gate: Option<Vec<String>>,
+    /// Files the gate may change, committed with the pin (a Cargo.lock that `cargo check` rewrites for a new tag).
+    pub also: Vec<String>,
     /// A list of the repositories whose pin a job moves; a follower not on it moves its pin by hand.
     pub listed_in: Option<Listing>,
     /// The repositories that pin it.
@@ -299,6 +303,7 @@ impl TryFrom<RawTool> for Tool {
             read,
             value,
             gate: r.gate,
+            also: r.also,
             listed_in: r.listed_in,
             followers: r.followers,
         })
