@@ -640,3 +640,107 @@ fn a_copy_in_a_file_the_follower_marks_as_a_record_is_skipped_and_an_unmarked_on
     assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
     assert!(f.detail.contains("procedures/install.md:1") && !f.detail.contains("data/"), "{f}");
 }
+
+fn graph_with(extra: &str) -> rhizoid_core::Graph {
+    rhizoid_core::Graph::parse(&format!("{GRAPH}\n{extra}")).expect("the graph parses")
+}
+
+const LAB_TOOLS_TABLE: &str =
+    "[[pins]]\nfollower = \"grenudi/lab-machine\"\nfile = \"lab.toml\"\ntable = \"tools\"\n";
+
+#[test]
+fn a_pin_table_is_covered_when_each_key_is_an_edge_or_unpinned_with_a_why() {
+    let w = World::current();
+    // lab.toml [tools]: lpoco is the lpoco edge's; oco-work is neither
+    let fs = status(&graph_with(LAB_TOOLS_TABLE), &w).unwrap();
+    let f = one(&fs, LAB_MACHINE, Check::PinCoverage);
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(f.detail.contains("oco-work pinned and covered by no edge") && f.is_drift(), "{f}");
+
+    let named = format!(
+        "{LAB_TOOLS_TABLE}unpinned = {{ oco-work = \"no living repository to pin it to\" }}\n"
+    );
+    let fs = status(&graph_with(&named), &w).unwrap();
+    let f = one(&fs, LAB_MACHINE, Check::PinCoverage);
+    assert_eq!(f.verdict, Verdict::Current, "{f}");
+    assert!(
+        f.detail.contains("by an edge: lpoco (lpoco)") && f.detail.contains("unpinned: oco-work"),
+        "{f}"
+    );
+}
+
+#[test]
+fn a_key_added_to_a_covered_table_with_no_edge_is_a_finding() {
+    let mut w = World::current();
+    w.put(
+        LAB_MACHINE,
+        MAIN,
+        "lab.toml",
+        "[tools]\nlpoco = \"0.17.1\"\noco-work = \"unknown\"\n[tools.newtool]\nrev = \"abc\"\n",
+    );
+    let named = format!("{LAB_TOOLS_TABLE}unpinned = {{ oco-work = \"no repository\" }}\n");
+    let f = one(&status(&graph_with(&named), &w).unwrap(), LAB_MACHINE, Check::PinCoverage).clone();
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(f.detail.contains("newtool"), "{f}");
+}
+
+#[test]
+fn an_unpinned_key_the_table_no_longer_has_is_said() {
+    let w = World::current();
+    let named = format!("{LAB_TOOLS_TABLE}unpinned = {{ oco-work = \"x\", gone = \"y\" }}\n");
+    let f = one(&status(&graph_with(&named), &w).unwrap(), LAB_MACHINE, Check::PinCoverage).clone();
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(f.detail.contains("unpinned names gone"), "{f}");
+}
+
+#[test]
+fn only_git_dependencies_count_when_the_table_says_so() {
+    let mut w = World::current();
+    w.put(
+        LAB_MACHINE,
+        MAIN,
+        "steps/Cargo.toml",
+        "[dependencies]\nserde = \"1\"\nlpoco-attended = { git = \"https://example.org/lab-tools\", tag = \"x\" }\n",
+    );
+    let table = "[[pins]]\nfollower = \"grenudi/lab-machine\"\nfile = \"steps/Cargo.toml\"\ntable = \"dependencies\"\ngit_only = true\n";
+    let f = one(&status(&graph_with(table), &w).unwrap(), LAB_MACHINE, Check::PinCoverage).clone();
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(f.detail.contains("lpoco-attended") && !f.detail.contains("serde"), "{f}");
+}
+
+#[test]
+fn an_unpinned_key_with_no_why_is_refused_when_the_graph_is_read() {
+    let bad = format!("{LAB_TOOLS_TABLE}unpinned = {{ oco-work = \" \" }}\n");
+    let e = rhizoid_core::Graph::parse(&format!("{GRAPH}\n{bad}")).unwrap_err();
+    assert!(e.contains("says no why"), "{e}");
+}
+
+#[test]
+fn every_problem_of_a_pin_table_is_said_at_once() {
+    let w = World::current();
+    let named = format!("{LAB_TOOLS_TABLE}unpinned = {{ lpoco = \"x\", gone = \"y\" }}\n");
+    let f = one(&status(&graph_with(&named), &w).unwrap(), LAB_MACHINE, Check::PinCoverage).clone();
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    for said in [
+        "oco-work pinned",
+        "unpinned names gone",
+        "unpinned names lpoco (the lpoco edge's), which an edge covers",
+    ] {
+        assert!(f.detail.contains(said), "{said}: {f}");
+    }
+}
+
+#[test]
+fn a_deeper_key_covers_its_entry_and_a_missing_table_is_said() {
+    let mut w = World::current();
+    w.put(LAB_MACHINE, MAIN, "lab.toml", "[tools.lpoco]\nversion = \"0.17.1\"\n");
+    let deeper = GRAPH.replace("key = \"tools.lpoco\"", "key = \"tools.lpoco.version\"");
+    let graph = rhizoid_core::Graph::parse(&format!("{deeper}\n{LAB_TOOLS_TABLE}")).unwrap();
+    let f = one(&status(&graph, &w).unwrap(), LAB_MACHINE, Check::PinCoverage).clone();
+    assert_eq!(f.verdict, Verdict::Current, "{f}");
+    let missing = LAB_TOOLS_TABLE.replace("table = \"tools\"", "table = \"nothing\"");
+    let fs = status(&graph_with(&missing), &World::current()).unwrap();
+    let f = one(&fs, LAB_MACHINE, Check::PinCoverage);
+    assert_eq!(f.verdict, Verdict::MovedByHand, "{f}");
+    assert!(f.detail.contains("no such table"), "{f}");
+}

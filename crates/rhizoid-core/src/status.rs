@@ -8,7 +8,7 @@
 //! not what it should be (the shell's `sed` read whatever was there).
 
 use crate::finding::{Check, Finding, Verdict};
-use crate::graph::{Fork, Graph, Layer, RepoName, Slice, Tool};
+use crate::graph::{Fork, Graph, Layer, PinRead, PinTable, RepoName, Slice, Tool};
 use crate::repos::{Level, RepoError, Repos};
 use crate::text::{
     is_three_part_release, latest_release, lines_missing, marked_part, raw_marked_part, same_text,
@@ -32,6 +32,9 @@ pub fn status(graph: &Graph, repos: &dyn Repos) -> Result<Vec<Finding>, RepoErro
         for f in &t.followers {
             cx.tool(t, f, &mut out)?;
         }
+    }
+    for p in &graph.pin_tables {
+        cx.pin_table(p, &mut out)?;
     }
     for f in &graph.forks {
         cx.fork(f, &mut out)?;
@@ -495,6 +498,84 @@ impl Cx<'_> {
                 l.file, l.owner
             ))
         })
+    }
+
+    /// A table of pins covered whole: each key a `[[tool]]` edge's (a `key` at or under it), or unpinned with a why.
+    fn pin_table(&self, p: &PinTable, out: &mut Vec<Finding>) -> Result<(), RepoError> {
+        let rev: &str = &self.graph.rev;
+        let edge =
+            Edge { follower: p.follower.as_str(), source: "graph", check: Check::PinCoverage };
+        let where_ = format!("{} [{}]", p.file, p.table);
+        let Some(text) = self.repos.file(&p.follower, rev, &p.file)? else {
+            out.push(edge.by_hand(format!("{} has no {} at {rev}", p.follower, p.file)));
+            return Ok(());
+        };
+        let doc = parse_toml(&p.follower, &p.file, &text)?;
+        let path = p.path();
+        let mut table = Some(&doc);
+        for part in &path {
+            table = table.and_then(|t| t.get(part)).and_then(|v| v.as_table());
+        }
+        let Some(table) = table else {
+            out.push(edge.by_hand(format!("{where_}: no such table")));
+            return Ok(());
+        };
+        let keys: Vec<&String> = table
+            .iter()
+            .filter(|(_, v)| !p.git_only || v.as_table().is_some_and(|t| t.contains_key("git")))
+            .map(|(k, _)| k)
+            .collect();
+        let covered_by = |key: &str| {
+            self.graph.tools.iter().find(|t| {
+                t.pin == p.file
+                    && t.followers.contains(&p.follower)
+                    && matches!(&t.read, PinRead::Key(k)
+                        if k.len() > path.len() && k.starts_with(&path) && k[path.len()] == key)
+            })
+        };
+        let (mut by_edge, mut unpinned, mut neither, mut both) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for key in keys {
+            match (covered_by(key), p.unpinned.get(key.as_str())) {
+                (Some(t), Some(_)) => both.push(format!("{key} (the {} edge\x27s)", t.name)),
+                (Some(t), None) => by_edge.push(format!("{key} ({})", t.name)),
+                (None, Some(_)) => unpinned.push(key.to_string()),
+                (None, None) => neither.push(key.to_string()),
+            }
+        }
+        let gone: Vec<String> =
+            p.unpinned.keys().filter(|k| !table.contains_key(k.as_str())).cloned().collect();
+        // every problem said at once, so one fix is not followed by another finding
+        let mut wrong = Vec::new();
+        if !neither.is_empty() {
+            wrong.push(format!(
+                "{} pinned and covered by no edge, nor named unpinned with a why - no mover moves it",
+                neither.join(", ")
+            ));
+        }
+        if !gone.is_empty() {
+            wrong
+                .push(format!("unpinned names {}, which the table no longer has", gone.join(", ")));
+        }
+        if !both.is_empty() {
+            wrong.push(format!("unpinned names {}, which an edge covers", both.join(", ")));
+        }
+        out.push(if !wrong.is_empty() {
+            edge.by_hand(format!("{where_}: {}", wrong.join("; ")))
+        } else {
+            let mut parts = Vec::new();
+            if !by_edge.is_empty() {
+                parts.push(format!("by an edge: {}", by_edge.join(", ")));
+            }
+            if !unpinned.is_empty() {
+                parts.push(format!("unpinned: {}", unpinned.join(", ")));
+            }
+            if parts.is_empty() {
+                parts.push("the table is empty".to_string());
+            }
+            edge.current(format!("{where_}: every key covered - {}", parts.join("; ")))
+        });
+        Ok(())
     }
 
     fn tool(&self, t: &Tool, follower: &RepoName, out: &mut Vec<Finding>) -> Result<(), RepoError> {
