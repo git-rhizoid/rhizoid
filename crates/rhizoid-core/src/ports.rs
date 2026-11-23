@@ -97,6 +97,19 @@ pub trait GitPort {
     /// How many commits `to` has that `from` lacks.
     fn count(&self, from: &str, to: &str) -> Result<u64, PortError>;
 
+    /// Where `a` and `b` meet (`git merge-base`); `None` when the clone's history holds no common commit (two
+    /// histories, or a shallow clone cut above it).
+    fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>, PortError>;
+
+    /// Rename the local branch `from` to `to` (`git branch -m`).
+    fn rename_branch(&self, from: &str, to: &str) -> Result<(), PortError>;
+
+    /// Whether a shallow boundary of the clone (a commit whose parents it was not given) lies in `from..to`.
+    fn shallow_boundary_between(&self, from: &str, to: &str) -> Result<bool, PortError>;
+
+    /// Delete the tag `name` (`git tag -d`).
+    fn delete_tag(&self, name: &str) -> Result<(), PortError>;
+
     /// Delete the local branch `name` (`git branch -D`).
     fn delete_branch(&self, name: &str) -> Result<(), PortError>;
 

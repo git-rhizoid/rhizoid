@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAN_DATE: &str = "2026-11-23";
-const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), merge a named list of branches onto a base into a tag (rhizoid assemble), and make a branch a series version for its upstream (rhizoid send-back)";
+const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), merge a named list of branches onto a base into a tag (rhizoid assemble), and draft the next series version of a branch for its upstream (rhizoid send-back)";
 
 const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command { name: "init", summary: "Write a fresh rhizoid.toml" },
@@ -40,7 +40,7 @@ const COMMANDS: &[generate::Command<'static>] = &[
     },
     generate::Command {
         name: "send-back",
-        summary: "Make a branch a series version for its upstream: rebased, cut, range-diffed, checked, tagged",
+        summary: "Draft the next series version of a branch for its upstream: rebased, cut, range-diffed, checked, tagged as a draft",
     },
     generate::Command { name: "completions", summary: "Shell completions for rhizoid" },
     generate::Command { name: "man", summary: "The manual page, in roff" },
