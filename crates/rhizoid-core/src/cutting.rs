@@ -12,6 +12,9 @@ use crate::ports::{CommandPort, GitHubPort, GitPort, MergeOutcome, MergeResult, 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+/// The suffix of a cutting's release tags: RELEASE-cut.N, the only form rhizoid makes and reads.
+pub const CUT_SUFFIX: &str = "-cut.N";
+
 /// The patch branch of a cutting that names none.
 pub const PATCH_BRANCH: &str = "rhizoid/patch";
 
@@ -87,6 +90,8 @@ pub enum Step {
     },
     /// Merge tracking into the patch branch in a fresh worktree, and push it.
     MergePatch { branch: String, tracking: String, remote: String },
+    /// Tag the patch tip RELEASE-cut.N and push the tag, when it moved since the newest cut tag.
+    CutTag { branch: String, prefix: String, remote: String, upstream: String },
     /// Write the cutting's record into the graph file (local).
     Record { record: Record },
     /// Take the cutting's `[[fork]]` edge out of the graph file (local; the fork stays on GitHub).
@@ -103,6 +108,7 @@ impl Step {
                 | Step::MergeUpstream { .. }
                 | Step::FastForwardTracking { .. }
                 | Step::MergePatch { .. }
+                | Step::CutTag { .. }
         )
     }
 
@@ -136,6 +142,9 @@ impl Step {
                     record.fork, record.upstream, record.patches, record.added
                 )
             }
+            Step::CutTag { branch, prefix, remote, .. } => format!(
+                "if {branch} moved since its newest cut tag: tag its tip {prefix}RELEASE-cut.N (RELEASE the release under it, N one past its cuts) and push the tag to the fork ({remote})"
+            ),
             Step::Drop { fork } => format!("take fork {fork} out of the graph (the fork itself stays)"),
         }
     }
@@ -492,7 +501,21 @@ pub fn plan_update(
         });
     }
     match side {
-        PatchSide::Branch(b) => plan.steps.push(Step::MergePatch { branch: b, tracking, remote }),
+        PatchSide::Branch(b) => {
+            plan.steps.push(Step::MergePatch {
+                branch: b.clone(),
+                tracking,
+                remote: remote.clone(),
+            });
+            if let Some(prefix) = &f.cut_tags {
+                plan.steps.push(Step::CutTag {
+                    branch: b,
+                    prefix: prefix.clone(),
+                    remote,
+                    upstream: f.upstream.url(),
+                });
+            }
+        }
         PatchSide::Integration => plan.notes.push(
             "patches = integration: its topics are assembled by rhizoid assemble, not merged here"
                 .to_string(),
@@ -675,6 +698,71 @@ pub fn carry_out(
                     MergeResult::AlreadyContained => {}
                     MergeResult::Merged { .. } => git.push_ref(&head?, remote, branch)?,
                 }
+            }
+            Step::CutTag { branch, prefix, remote, upstream } => {
+                // the upstream's releases and the fork's cuts, each into a namespace of rhizoid's own: the clone's
+                // tags are never written, and a tag that moved upstream cannot stop an update
+                let releases_ns = "refs/rhizoid/releases/";
+                let cuts_ns = format!("refs/rhizoid/cuts/{}/", remote.replace('/', "-"));
+                git.fetch_into(upstream, &format!("+refs/tags/{prefix}*:{releases_ns}{prefix}*"))?;
+                git.fetch_into(remote, &format!("+refs/tags/{prefix}*:{cuts_ns}{prefix}*"))?;
+                let tip = git.fetch_ref(remote, branch)?;
+                let cuts: Vec<(String, String)> = git
+                    .refs_under(&cuts_ns)?
+                    .into_iter()
+                    .filter(|(t, _)| t.starts_with(prefix.as_str()) && t.contains("-cut."))
+                    .collect();
+                let names: Vec<String> = cuts.iter().map(|(t, _)| t.clone()).collect();
+                let newest = crate::text::latest_cut(&names, prefix, CUT_SUFFIX);
+                let newest_at = newest.as_ref().and_then(|v| {
+                    cuts.iter()
+                        .find(|(t, _)| *t == format!("{prefix}{v}"))
+                        .map(|(_, sha)| sha.clone())
+                });
+                if newest_at.as_deref() == Some(tip.as_str()) {
+                    done.push(format!(
+                        "no cut tag: {branch} is {prefix}{} already",
+                        newest.unwrap_or_default()
+                    ));
+                    continue;
+                }
+                // the newest numeric release that is under the tip (a release candidate is no release to cut)
+                let mut releases: Vec<(Vec<u64>, String, String)> = git
+                    .refs_under(releases_ns)?
+                    .into_iter()
+                    .filter_map(|(t, sha)| {
+                        let v = t.strip_prefix(prefix.as_str())?;
+                        let (numbers, n) = crate::text::cut_order(v, CUT_SUFFIX)?;
+                        (n == 0 && !v.contains("-cut.")).then(|| (numbers, v.to_string(), sha))
+                    })
+                    .collect();
+                releases.sort_by(|a, b| b.0.cmp(&a.0));
+                let mut release = None;
+                for (_, v, sha) in &releases {
+                    if git.is_ancestor(sha, &tip)? {
+                        release = Some(v.clone());
+                        break;
+                    }
+                }
+                let version = release.ok_or_else(|| {
+                    PortError(format!("no {prefix}RELEASE (numbers only) under {branch}: nothing to name a cut after"))
+                })?;
+                let n = names
+                    .iter()
+                    .filter_map(|t| t.strip_prefix(prefix.as_str()))
+                    .filter(|v| v.split_once("-cut.").map(|(r, _)| r) == Some(version.as_str()))
+                    .filter_map(|v| crate::text::cut_order(v, CUT_SUFFIX).map(|(_, n)| n))
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+                let name = format!("{prefix}{version}-cut.{n}");
+                git.tag(&name, &tip, &format!("rhizoid cut: {branch} on {prefix}{version}"))?;
+                if let Err(e) = git.push_tag(remote, &name) {
+                    // a tag the fork does not have is not kept: the next run makes it again
+                    let _ = git.delete_tag(&name);
+                    return Err(e);
+                }
+                done.push(format!("tagged {name} and pushed it"));
             }
             Step::Record { record } => {
                 let text = std::fs::read_to_string(doing.graph_file)

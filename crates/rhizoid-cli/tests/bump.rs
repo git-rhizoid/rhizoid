@@ -374,3 +374,21 @@ fn a_slice_release_naming_a_path_outside_the_follower_is_not_laid() {
     assert!(value(&out, "pin.3.why").unwrap().contains("outside the follower"), "{out:?}");
     assert!(!w.root.join("acme/escape.txt").exists());
 }
+
+#[test]
+fn a_cuttings_pin_moves_to_its_newest_cut_never_to_a_plain_upstream_tag() {
+    let w = world(PASSING_GATE);
+    git(&w.root.join("acme/tools"), &["tag", "lpoco-v1.0.0-cut.3"]);
+    git(&w.root.join("acme/tools"), &["tag", "lpoco-v1.0.0-cut.10"]);
+    let graph = std::fs::read_to_string(&w.graph).unwrap();
+    std::fs::write(
+        &w.graph,
+        graph.replace(
+            "tag_prefix = \"lpoco-v\"\n",
+            "tag_prefix = \"lpoco-v\"\ntag_suffix = \"-cut.N\"\n",
+        ),
+    )
+    .unwrap();
+    let out = w.bump(&["--only", "acme/lab"]);
+    assert_eq!(value(&out, "pin.1.latest").as_deref(), Some("1.0.0-cut.10"), "{out:?}");
+}

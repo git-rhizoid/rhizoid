@@ -392,7 +392,16 @@ impl Cx<'_> {
             return Ok(());
         };
         let pinned = crate::pins::read_pin(t, follower, &text)?;
-        let latest = self.latest(&t.source, &t.tag_prefix)?;
+        let latest = match &t.tag_suffix {
+            Some(s) => crate::text::latest_cut(&self.repos.tags(&t.source)?, &t.tag_prefix, s)
+                .ok_or_else(|| {
+                    RepoError::Failed(format!(
+                        "{} has no cut tagged {}VERSION{s}",
+                        t.source, t.tag_prefix
+                    ))
+                })?,
+            None => self.latest(&t.source, &t.tag_prefix)?,
+        };
         out.push(match pinned {
             Some(p) if p == latest => edge(Check::ToolPin).current(format!("{} {p}", t.name)),
             Some(p) => edge(Check::ToolPin).behind(format!("pins {} {p}, latest {latest}", t.name)),

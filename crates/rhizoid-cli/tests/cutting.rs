@@ -451,3 +451,110 @@ fn update_of_an_integration_cutting_pushes_nothing_and_names_topics_behind_the_n
     assert_eq!(git(&w.fork, &["rev-parse", "master"]), before);
     assert!(!wrote_to_github(&w.calls()), "{}", w.calls());
 }
+
+#[test]
+fn update_tags_the_patch_tip_release_cut_n_only_when_it_moved() {
+    let w = world(None);
+    let work = w.root.join("upwork");
+    assert!(Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&w.upstream)
+        .arg(&work)
+        .status()
+        .unwrap()
+        .success());
+    git(&work, &["tag", "-a", "-m", "v1.0", "v1.0"]);
+    git(&work, &["push", "-q", "origin", "v1.0"]);
+    w.graph(&format!(
+        "[[fork]]\nfork = \"acme/fork\"\nupstream = \"{}\"\ncut_tags = \"v\"\n",
+        w.upstream.display()
+    ));
+    assert_eq!(w.rhizoid(&["import", "acme/fork", "now"]).status.code(), Some(0));
+
+    let plan = w.rhizoid(&["update", "acme/fork"]);
+    assert!(
+        value(&plan, "step.3")
+            .unwrap()
+            .starts_with("if rhizoid/patch moved since its newest cut tag"),
+        "{plan:?}"
+    );
+    assert_eq!(value(&plan, "step.3.outward").as_deref(), Some("yes"));
+    assert_eq!(git(&w.fork, &["tag", "-l", "*-cut.*"]), "", "a plan tags nothing");
+
+    let first = w.rhizoid(&["update", "acme/fork", "now"]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    assert_eq!(git(&w.fork, &["tag", "-l", "*-cut.*"]), "v1.0-cut.1");
+    assert_eq!(
+        git(&w.fork, &["rev-parse", "v1.0-cut.1^{commit}"]),
+        git(&w.fork, &["rev-parse", "rhizoid/patch"])
+    );
+
+    let again = w.rhizoid(&["update", "acme/fork", "now"]);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(
+        git(&w.fork, &["tag", "-l", "*-cut.*"]),
+        "v1.0-cut.1",
+        "nothing changed: nothing tagged"
+    );
+
+    git(&w.clone, &["fetch", "-q", "origin"]);
+    git(&w.clone, &["checkout", "-q", "-b", "p", "origin/rhizoid/patch"]);
+    std::fs::write(w.clone.join("PATCH"), "a patch\n").unwrap();
+    git(&w.clone, &["add", "-A"]);
+    git(&w.clone, &["commit", "-q", "-m", "a patch"]);
+    git(&w.clone, &["push", "-q", "origin", "p:rhizoid/patch"]);
+    git(&w.clone, &["checkout", "-q", "master"]);
+    assert_eq!(w.rhizoid(&["update", "acme/fork", "now"]).status.code(), Some(0));
+    assert_eq!(
+        git(&w.fork, &["tag", "-l", "*-cut.*"]),
+        "v1.0-cut.1\nv1.0-cut.2",
+        "a new patch: N+1"
+    );
+
+    std::fs::write(work.join("NEW"), "1.1\n").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "1.1"]);
+    git(&work, &["tag", "-a", "-m", "v1.1", "v1.1"]);
+    git(&work, &["push", "-q", "origin", "master", "v1.1"]);
+    let released = w.rhizoid(&["update", "acme/fork", "now"]);
+    assert_eq!(released.status.code(), Some(0), "{released:?}");
+    assert!(
+        git(&w.fork, &["tag", "-l", "*-cut.*"]).ends_with("v1.1-cut.1"),
+        "a new release: its first cut"
+    );
+}
+
+#[test]
+fn a_rolling_upstream_tag_or_a_release_candidate_never_stops_a_cut() {
+    let w = world(None);
+    let work = w.root.join("upwork");
+    assert!(Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&w.upstream)
+        .arg(&work)
+        .status()
+        .unwrap()
+        .success());
+    git(&work, &["tag", "-a", "-m", "v1.0", "v1.0"]);
+    git(&work, &["tag", "vnightly"]);
+    git(&work, &["push", "-q", "origin", "v1.0", "vnightly"]);
+    git(&w.clone, &["fetch", "-q", "--tags", w.upstream.to_str().unwrap()]);
+    w.graph(&format!(
+        "[[fork]]\nfork = \"acme/fork\"\nupstream = \"{}\"\ncut_tags = \"v\"\n",
+        w.upstream.display()
+    ));
+    assert_eq!(w.rhizoid(&["import", "acme/fork", "now"]).status.code(), Some(0));
+    std::fs::write(work.join("NEW"), "rc\n").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "rc"]);
+    git(&work, &["tag", "-a", "-m", "rc", "v1.1-rc1"]);
+    git(&work, &["tag", "-f", "vnightly"]);
+    git(&work, &["push", "-q", "-f", "origin", "master", "v1.1-rc1", "vnightly"]);
+    let out = w.rhizoid(&["update", "acme/fork", "now"]);
+    assert_eq!(out.status.code(), Some(0), "the moved vnightly stops nothing: {out:?}");
+    assert_eq!(
+        git(&w.fork, &["tag", "-l", "*-cut.*"]),
+        "v1.0-cut.1",
+        "the rc is no release to cut"
+    );
+}

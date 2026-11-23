@@ -142,6 +142,15 @@ pub trait GitPort {
     /// Push the commit `commit` to `remote`'s branch `branch`, never forced (a branch that moved elsewhere refuses).
     fn push_ref(&self, commit: &str, remote: &str, branch: &str) -> Result<(), PortError>;
 
+    /// Fetch `remote` with one refspec (`+SRC:DST`), its tags not followed: into a namespace of rhizoid's own.
+    fn fetch_into(&self, remote: &str, refspec: &str) -> Result<(), PortError>;
+
+    /// The refs under `namespace`, without it, each with the commit it names (a tag peeled).
+    fn refs_under(&self, namespace: &str) -> Result<Vec<(String, String)>, PortError>;
+
+    /// Push the tag `name` to `remote`, never forced.
+    fn push_tag(&self, remote: &str, name: &str) -> Result<(), PortError>;
+
     /// The clone's remotes, each with its fetch URL.
     fn remotes(&self) -> Result<Vec<(String, String)>, PortError>;
 

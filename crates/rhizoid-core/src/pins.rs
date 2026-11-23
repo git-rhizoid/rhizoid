@@ -208,7 +208,16 @@ pub fn plan(graph: &crate::Graph, repos: &dyn crate::Repos) -> Result<Vec<Pin>, 
     };
     let mut pins = Vec::new();
     for (i, t) in graph.tools.iter().enumerate() {
-        let newest = latest(&t.source, &t.tag_prefix)?;
+        let newest = match &t.tag_suffix {
+            Some(s) => crate::text::latest_cut(&repos.tags(&t.source)?, &t.tag_prefix, s)
+                .ok_or_else(|| {
+                    RepoError::Failed(format!(
+                        "{} has no cut tagged {}VERSION{s}",
+                        t.source, t.tag_prefix
+                    ))
+                })?,
+            None => latest(&t.source, &t.tag_prefix)?,
+        };
         for f in &t.followers {
             let text = repos.file(f, rev, &t.pin)?.unwrap_or_default();
             pins.push(Pin {

@@ -263,6 +263,34 @@ impl GitPort for GitCli {
         self.ok(&["push", "-q", remote, &format!("{commit}:refs/heads/{branch}")]).map(drop)
     }
 
+    fn fetch_into(&self, remote: &str, refspec: &str) -> Result<(), PortError> {
+        if remote.starts_with('-') {
+            return Err(PortError(format!("{remote}: not a remote")));
+        }
+        self.ok(&["fetch", "-q", "--no-tags", remote, refspec]).map(drop)
+    }
+
+    fn refs_under(&self, namespace: &str) -> Result<Vec<(String, String)>, PortError> {
+        let out = self.ok(&[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)%00%(*objectname)",
+            namespace,
+        ])?;
+        Ok(out
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split('\0');
+                let (name, object, peeled) = (f.next()?, f.next()?, f.next().unwrap_or(""));
+                let commit = if peeled.is_empty() { object } else { peeled };
+                Some((name.strip_prefix(namespace)?.to_string(), commit.to_string()))
+            })
+            .collect())
+    }
+
+    fn push_tag(&self, remote: &str, name: &str) -> Result<(), PortError> {
+        self.ok(&["push", "-q", remote, &format!("refs/tags/{name}")]).map(drop)
+    }
+
     fn remotes(&self) -> Result<Vec<(String, String)>, PortError> {
         // the URLs as configured: `git remote -v` would show them after insteadOf rewrites
         let out = self.run(&self.repo, &["config", "--get-regexp", r"^remote\..*\.url$"])?;
