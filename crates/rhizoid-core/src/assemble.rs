@@ -274,7 +274,7 @@ pub fn next_number(tags: &[String], before: &str, after: &str) -> Result<u32, St
     let highest = tags
         .iter()
         .filter_map(|t| t.strip_prefix(before)?.strip_suffix(after))
-        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .filter(|n| !n.is_empty() && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit()))
         .filter_map(|n| n.parse::<u32>().ok())
         .max();
     match highest {

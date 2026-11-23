@@ -1,15 +1,27 @@
 # rhizoid's config for `rhizoid send-back`, as a Linux kernel tree would use it - one example among any. Every
-# name and command is the config's, not rhizoid's. Checks run in the rebased worktree, in order; any exit but 0 is
-# a failed check, and the version is tagged only when none failed. A check's exceptions are its own arguments.
+# name and command is the config's, not rhizoid's. Checks run in the rebased worktree, in order; an exit but 0
+# fails the draft unless the step says `fails = false` (its findings are then reported in SEND-NOTES and count
+# for nothing). A check's exceptions are its own arguments.
 
 [send]
 branch = "send/{leaf}/v{n}"         # the send branch ({branch}, {leaf}, one {n}); this is the default
-tag = "{branch}/v{n}"               # the version tag; this is the default
+draft_tag = "{branch}/v{n}-draft"   # a draft's tag; the default
+tag = "{branch}/v{n}"               # a version sent: the author tags his signed tip so; drafts are numbered past it
+testing = "Testing: <from evidence rows>"   # the cover letter's testing line, a marked blank for the author
 
+# An unsigned draft always lacks a Signed-off-by, and in a shallow tree a Fixes: id cannot resolve: expected of
+# every draft. This run reports them (and everything else) and counts for nothing...
+[[send.check]]
+name = "checkpatch-all"
+run = ["scripts/checkpatch.pl", "--strict"]
+patches = true
+fails = false
+
+# ...and this one fails the draft on any other finding.
 [[send.check]]
 name = "checkpatch"
-run = ["scripts/checkpatch.pl", "--strict", "--ignore", "FILE_PATH_CHANGES"]
-patches = true                      # the patch files (no cover letter) are appended
+run = ["scripts/checkpatch.pl", "--strict", "--ignore", "MISSING_SIGN_OFF,UNKNOWN_COMMIT_ID,BAD_FIXES_TAG"]
+patches = true
 
 [[send.check]]
 name = "w1"

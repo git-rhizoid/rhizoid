@@ -248,7 +248,7 @@ contract! {
         ty: Type::String,
         subcommands: &[Command::SendBack],
         arg: Some(Arg { value_name: "BRANCH", ..Arg::positional(0) }),
-        summary: "The branch to send back as a series.",
+        summary: "The branch to draft the next series version of.",
         ..Input::EMPTY
     };
 
@@ -266,7 +266,7 @@ contract! {
         ty: Type::String,
         subcommands: &[Command::SendBack],
         arg: Some(Arg { value_name: "DIR", ..Arg::long("out") }),
-        summary: "The folder the series goes in: new or empty (printed as file=).",
+        summary: "The folder the draft goes in: new, empty, or this same draft's from an earlier run (printed as file=).",
         ..Input::EMPTY
     };
 

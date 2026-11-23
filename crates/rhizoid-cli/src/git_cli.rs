@@ -188,6 +188,38 @@ impl GitPort for GitCli {
         n.trim().parse().map_err(|_| PortError(format!("git rev-list --count said {n}")))
     }
 
+    fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>, PortError> {
+        let out = self.run(&self.repo, &["merge-base", a, b])?;
+        match out.status.code() {
+            Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string())),
+            Some(1) => Ok(None),
+            _ => Err(PortError(format!(
+                "git merge-base {a} {b}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))),
+        }
+    }
+
+    fn rename_branch(&self, from: &str, to: &str) -> Result<(), PortError> {
+        self.ok(&["branch", "-m", from, to]).map(drop)
+    }
+
+    fn shallow_boundary_between(&self, from: &str, to: &str) -> Result<bool, PortError> {
+        let file = self.ok(&["rev-parse", "--git-path", "shallow"])?;
+        let path = self.repo.join(file.trim());
+        let Ok(shallow) = std::fs::read_to_string(&path) else { return Ok(false) };
+        let boundary: std::collections::BTreeSet<&str> = shallow.lines().map(str::trim).collect();
+        if boundary.is_empty() {
+            return Ok(false);
+        }
+        let between = self.ok(&["rev-list", &format!("{from}..{to}")])?;
+        Ok(between.lines().any(|c| boundary.contains(c.trim())) || boundary.contains(from))
+    }
+
+    fn delete_tag(&self, name: &str) -> Result<(), PortError> {
+        self.ok(&["tag", "-d", name]).map(drop)
+    }
+
     fn delete_branch(&self, name: &str) -> Result<(), PortError> {
         self.ok(&["branch", "-q", "-D", name]).map(drop)
     }

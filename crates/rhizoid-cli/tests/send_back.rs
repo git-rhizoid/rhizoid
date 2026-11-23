@@ -118,9 +118,15 @@ fn a_branch_becomes_a_tagged_version_cut_onto_the_target_and_checked() {
     let tested = git(&w.repo, &["rev-parse", "topic/x"]);
     let out = w.send("series/v1", &["--tested", &tested[..10], "--fork", "acme-app"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert_eq!(value(&out, "version").as_deref(), Some("v1"));
+    assert_eq!(value(&out, "draft").as_deref(), Some("v1"));
+    assert_eq!(value(&out, "version"), None, "a version exists once it is sent");
+    assert_eq!(value(&out, "draft_tag").as_deref(), Some("topic/x/v1-draft"));
     assert_eq!(value(&out, "carried-in").as_deref(), Some("acme-app/topic/x"));
-    assert_eq!(value(&out, "local-ref").as_deref(), Some("topic/x/v1"));
+    assert_eq!(
+        value(&out, "local-ref").as_deref(),
+        Some("topic/x"),
+        "the branch, as an upstream item names it"
+    );
     assert_eq!(value(&out, "file").map(PathBuf::from), Some(w.root.join("series/v1")));
     assert_eq!(value(&out, "tested").as_deref(), Some(tested.as_str()), "the full sha");
     assert_eq!(value(&out, "range_diff").as_deref(), Some("none"));
@@ -132,7 +138,7 @@ fn a_branch_becomes_a_tagged_version_cut_onto_the_target_and_checked() {
     let next = git(&w.repo, &["rev-parse", "for-next"]);
     assert_eq!(git(&w.repo, &["rev-parse", "send/x/v1~2"]), next, "rebased onto the target");
     assert_eq!(
-        git(&w.repo, &["rev-parse", "topic/x/v1^{commit}"]),
+        git(&w.repo, &["rev-parse", "topic/x/v1-draft^{commit}"]),
         git(&w.repo, &["rev-parse", "send/x/v1"])
     );
     assert_eq!(
@@ -161,14 +167,15 @@ fn a_branch_becomes_a_tagged_version_cut_onto_the_target_and_checked() {
 fn the_next_version_carries_its_range_diff_and_a_changelog_to_fill() {
     let w = world();
     assert_eq!(w.send("series/v1", &[]).status.code(), Some(0));
+    git(&w.repo, &["tag", "topic/x/v1", "send/x/v1"]);
     git(&w.repo, &["checkout", "-q", "topic/x"]);
     commit(&w.repo, "x.txt", "x, best\n", "x: make x best");
     git(&w.repo, &["checkout", "-q", "main"]);
     std::fs::write(&w.config, CONFIG.replace("test $# -eq 2", "test $# -eq 3")).unwrap();
     let out = w.send("series/v2", &[]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert_eq!(value(&out, "version").as_deref(), Some("v2"));
-    assert_eq!(value(&out, "local-ref").as_deref(), Some("topic/x/v2"));
+    assert_eq!(value(&out, "draft").as_deref(), Some("v2"), "one past the version sent");
+    assert_eq!(value(&out, "draft_tag").as_deref(), Some("topic/x/v2-draft"));
     assert_eq!(value(&out, "range_diff").as_deref(), Some("topic/x/v1"));
     let cover = std::fs::read_to_string(value(&out, "patch.1").unwrap()).unwrap();
     assert!(cover.contains("Changes since v1:"), "{cover}");
@@ -187,7 +194,7 @@ fn a_conflict_names_the_commit_and_leaves_nothing() {
     assert_eq!(value(&out, "conflict.commit").as_deref(), Some(first.as_str()));
     assert_eq!(value(&out, "conflict.subject").as_deref(), Some("x: add x"));
     assert_eq!(value(&out, "conflict.path.1").as_deref(), Some("x.txt"));
-    assert_eq!(value(&out, "local-ref"), None);
+    assert_eq!(value(&out, "draft_tag"), None);
     assert_eq!(git(&w.repo, &["branch", "--list", "send/*"]), "");
     assert_eq!(git(&w.repo, &["tag", "-l", "topic/*"]), "");
     assert!(!w.root.join("worktrees/app/rhizoid/send-x-v1").exists());
@@ -200,7 +207,7 @@ fn a_failed_check_cuts_the_series_but_tags_nothing() {
     let out = w.send("series/v1", &[]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert_eq!(value(&out, "check.1.exit").as_deref(), Some("3"));
-    assert_eq!(value(&out, "local-ref"), None);
+    assert_eq!(value(&out, "draft_tag"), None);
     assert_eq!(
         git(&w.repo, &["branch", "--list", "send/*"]),
         "",
@@ -213,7 +220,7 @@ fn a_failed_check_cuts_the_series_but_tags_nothing() {
     );
     std::fs::write(&w.config, "").unwrap();
     let again = w.send("series/v1-again", &[]);
-    assert_eq!(value(&again, "version").as_deref(), Some("v1"), "the version was not used up");
+    assert_eq!(value(&again, "draft").as_deref(), Some("v1"), "the number was not used up");
 }
 
 #[test]
@@ -258,7 +265,8 @@ fn without_a_config_the_names_are_the_defaults_and_there_are_no_checks() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["local-ref"], "topic/x/v1");
+    assert_eq!(v["local-ref"], "topic/x");
+    assert_eq!(v["draft_tag"], "topic/x/v1-draft");
     assert_eq!(v["send_branch"], "send/x/v1");
     assert_eq!(v["checks"].as_array().unwrap().len(), 0);
 }
@@ -349,5 +357,139 @@ fn a_failing_recipients_command_fails_the_run_and_names_no_one() {
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert_eq!(value(&out, "recipient.1"), None);
     assert_eq!(value(&out, "check.1.name").as_deref(), Some("who"));
-    assert_eq!(value(&out, "local-ref"), None);
+    assert_eq!(value(&out, "draft_tag"), None);
+}
+
+#[test]
+fn a_draft_run_again_replaces_its_draft_and_burns_no_number() {
+    let w = world();
+    std::fs::write(&w.config, "").unwrap();
+    let first = w.send("series/v1-draft", &[]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    git(&w.repo, &["checkout", "-q", "topic/x"]);
+    commit(&w.repo, "x.txt", "x, fixed\n", "x: a fix before sending");
+    git(&w.repo, &["checkout", "-q", "main"]);
+    let again = w.send("series/v1-draft", &[]);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(value(&again, "draft").as_deref(), Some("v1"), "nothing was sent: still v1");
+    assert_eq!(value(&again, "replaced").as_deref(), Some("yes"));
+    assert_eq!(value(&first, "replaced"), None);
+    let tip = git(&w.repo, &["rev-parse", "topic/x/v1-draft^{commit}"]);
+    assert_eq!(git(&w.repo, &["rev-parse", "send/x/v1"]), tip);
+    assert_eq!(git(&w.repo, &["log", "-1", "--format=%s", &tip]), "x: a fix before sending");
+    assert_eq!(
+        value(&again, "patch.4").map(|p| p.ends_with("v1-0003-x-a-fix-before-sending.patch")),
+        Some(true)
+    );
+
+    std::fs::write(w.root.join("other.txt"), "x").unwrap();
+    std::fs::create_dir_all(w.root.join("theirs")).unwrap();
+    std::fs::write(w.root.join("theirs/notes.txt"), "not a draft").unwrap();
+    let refused = w.send("theirs", &[]);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("not this draft's"), "{refused:?}");
+}
+
+#[test]
+fn a_reported_only_check_counts_for_nothing_and_its_findings_stay_in_the_notes() {
+    let w = world();
+    std::fs::write(
+        &w.config,
+        "[send]\ntesting = \"Testing: <from evidence rows>\"\n\
+         [[send.check]]\nname = \"all\"\nrun = [\"sh\", \"-c\", \"echo 'ERROR: Missing Signed-off-by'; exit 1\"]\nfails = false\n\
+         [[send.check]]\nname = \"counted\"\nrun = [\"sh\", \"-c\", \"exit 0\"]\n",
+    )
+    .unwrap();
+    let out = w.send("series/v1", &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(value(&out, "check.1.exit").as_deref(), Some("1"));
+    assert_eq!(value(&out, "check.1.counts").as_deref(), Some("no"));
+    assert_eq!(value(&out, "check.2.counts"), None);
+    let notes = std::fs::read_to_string(w.root.join("series/v1/SEND-NOTES")).unwrap();
+    assert!(
+        notes.contains("== check all (exit 1, reported only)")
+            && notes.contains("Missing Signed-off-by"),
+        "{notes}"
+    );
+    let cover = std::fs::read_to_string(value(&out, "patch.1").unwrap()).unwrap();
+    assert!(cover.contains("Testing: <from evidence rows>"), "a marked blank: {cover}");
+    assert!(!cover.contains("x: add x\n\n"), "nothing filled from commit messages");
+}
+
+#[test]
+fn a_shallow_clone_that_cannot_hold_the_history_is_refused_before_anything_is_written() {
+    let w = world();
+    let shallow = w.root.join("shallow");
+    let url = format!("file://{}", w.repo.display());
+    let ok = Command::new("git")
+        .args(["clone", "-q", "--depth", "1", "--no-single-branch", &url])
+        .arg(&shallow)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let out = Command::new(bin())
+        .args(["send-back", "topic/x", "--onto", "origin/for-next", "--out"])
+        .arg(w.root.join("s"))
+        .arg("--repo")
+        .arg(&shallow)
+        .env("AGENT_WORKTREES", w.root.join("worktrees"))
+        .envs(IDENTITY)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("not in this clone's history") && err.contains("--deepen"), "{err}");
+    assert!(!w.root.join("s").exists());
+    assert_eq!(git(&shallow, &["branch", "--list", "send/*"]), "");
+}
+
+#[test]
+fn a_rerun_that_fails_keeps_the_earlier_draft_and_never_touches_what_is_not_its_own() {
+    let w = world();
+    std::fs::write(&w.config, "").unwrap();
+    assert_eq!(w.send("series/d", &[]).status.code(), Some(0));
+    let draft = git(&w.repo, &["rev-parse", "topic/x/v1-draft^{commit}"]);
+    std::fs::write(w.root.join("series/d/reply-from-maintainer.txt"), "keep me").unwrap();
+
+    git(&w.repo, &["checkout", "-q", "for-next"]);
+    commit(&w.repo, "x.txt", "x from the target\n", "x: the target's own x");
+    git(&w.repo, &["checkout", "-q", "main"]);
+    let conflicted = w.send("series/d", &[]);
+    assert_eq!(conflicted.status.code(), Some(1), "{conflicted:?}");
+    assert_eq!(value(&conflicted, "replaced"), None);
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "topic/x/v1-draft^{commit}"]),
+        draft,
+        "the earlier draft stands"
+    );
+    assert_eq!(git(&w.repo, &["rev-parse", "send/x/v1"]), draft);
+    assert!(w.root.join("series/d/SEND-NOTES").exists());
+    assert!(!w.root.join("series/d.next").exists());
+
+    git(&w.repo, &["checkout", "-q", "for-next"]);
+    git(&w.repo, &["reset", "-q", "--hard", "HEAD~1"]);
+    git(&w.repo, &["checkout", "-q", "main"]);
+    let again = w.send("series/d", &[]);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(value(&again, "replaced").as_deref(), Some("yes"));
+    assert_eq!(value(&again, "file").map(PathBuf::from), Some(w.root.join("series/d")));
+    assert!(w.root.join("series/d/reply-from-maintainer.txt").exists(), "not the draft's: kept");
+    assert!(!w.root.join("series/d.next").exists());
+}
+
+#[test]
+fn a_send_branch_someone_worked_on_is_never_replaced() {
+    let w = world();
+    std::fs::write(&w.config, "").unwrap();
+    assert_eq!(w.send("series/d", &[]).status.code(), Some(0));
+    git(&w.repo, &["checkout", "-q", "send/x/v1"]);
+    commit(&w.repo, "x.txt", "signed off by hand\n", "x: amended before sending");
+    git(&w.repo, &["checkout", "-q", "main"]);
+    let out = w.send("series/d", &[]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("is not at the draft"), "{out:?}");
+    assert_eq!(
+        git(&w.repo, &["log", "-1", "--format=%s", "send/x/v1"]),
+        "x: amended before sending"
+    );
 }
