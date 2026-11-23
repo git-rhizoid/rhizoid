@@ -42,7 +42,7 @@ const COMMANDS: &[generate::Command<'static>] = &[
     },
     generate::Command {
         name: "bump",
-        summary: "Every pin of a graph in one place; with now, bump each tool pin behind on a branch",
+        summary: "Every pin of a graph in one place; with now, bump each pin behind that names rhizoid-bump, on a branch",
     },
     generate::Command {
         name: "follow",

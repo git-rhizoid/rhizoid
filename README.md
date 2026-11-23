@@ -246,13 +246,15 @@ rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--fetch] [--push] 
 ```
 
 Every pin of a graph in one place - each pin where its own reader reads it, listed here together: each `[[tool]]` and `[[slice]]` follower, the file and value that pins it, and the
-newest release of its source. Without `now` it lists them and changes nothing (it ends 1 when one is behind). With
-`now`, each tool pin that is behind is bumped in its follower's clone: a branch `rhizoid/bump/TOOL-VERSION` from the
+newest release of its source, and `pin.N.moved_by`: the one job that moves it, named on its edge (`moved_by` on a `[[tool]]` or
+`[[slice]]`, default `rhizoid-bump`; decision 2026-11-23-every-pin-one-pushed-mover). Without `now` it lists them and
+changes nothing (it ends 1 when one is behind). With `now`, it moves only the pins naming `rhizoid-bump` - another
+job's pin is listed and left, and its exit says only how its own pins stand. Each tool pin of its own that is behind is bumped in its follower's clone: a branch `rhizoid/bump/TOOL-VERSION` from the
 graph's revision, in a fresh worktree; only the pinned value edited, the rest of the file as it was, and the edit read
 back before it is committed (a value that appears twice, or does not read back, is `refused`, left to a hand); the
 tool's `gate`, when it has one, passed before the commit (`gated-out` commits nothing); `--push` pushes the branch to
 the follower's `origin`, `--pr` also opens its pull request (`gh pr create --fill`). A branch already there is
-`branch-exists`. A slice pin that is behind is moved through `follow` the same way: a branch
+`branch-exists`. A slice pin of its own that is behind is moved through `follow` the same way: a branch
 `rhizoid/bump/OWNER-REPO-VERSION`, the release laid into the fresh worktree as idealkb's follow.sh lays it (the pin moved
 with it), the slice's `gate` passed, and every file follow laid committed; a follower that changed a generic file
 (follow's 3) is `refused` - left for a hand, as update-pins leaves it; so is a release whose list names a path
@@ -279,14 +281,15 @@ value = "lpoco-attended-v{version}"           # a Cargo git dependency's tag
 gate = ["cargo", "check", "--manifest-path", "procedures/steps/Cargo.toml"]   # argv, in the bumped worktree;
                                              #   any exit but 0 commits nothing
 also = ["procedures/steps/Cargo.lock"]       # what the gate may change: committed with the pin
+moved_by = "rhizoid-bump"                  # the one job that moves this pin (the default); bump now leaves any other's
 followers = ["linux-phone-oco/google-walleye-lab"]
 ```
 
 Its report is `pin.N.follower`, `pin.N.kind` (`tool` or `slice`), `pin.N.name`, `pin.N.file`, `pin.N.pinned`,
 `pin.N.latest`, `pin.N.state` (`current`, `behind`, `bumped`, `branch-exists`, `gated-out`, `refused`), and as it goes
 `pin.N.branch`, `pin.N.pushed`, `pin.N.pr`, `pin.N.gate.exit` and `pin.N.gate.output`, `pin.N.why`,
-`pin.N.moved_by` - or the same as JSON. With `now` it ends 0 when every tool pin is current or bumped, 1 when one
-was gated out or refused, 2 when it could not run. What installs a bumped pin on a machine (`lpoco-host follow` for
+`pin.N.moved_by` - or the same as JSON. With `now` it ends 0 when every pin it moves is current or bumped, 1 when
+one was gated out or refused, 2 when it could not run. What installs a bumped pin on a machine (`lpoco-host follow` for
 `lab.toml`'s `lpoco`) is the follower's, not rhizoid's.
 
 ## rhizoid follow
