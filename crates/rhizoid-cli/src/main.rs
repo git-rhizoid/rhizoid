@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAN_DATE: &str = "2026-11-23";
-const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), merge a named list of branches onto a base into a tag (rhizoid assemble), draft the next series version of a branch for its upstream (rhizoid send-back), and keep every pin in one place (rhizoid bump)";
+const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), merge a named list of branches onto a base into a tag (rhizoid assemble), draft the next series version of a branch for its upstream (rhizoid send-back), keep every pin in one place (rhizoid bump), and lay a slice as idealkb's follow.sh does (rhizoid follow)";
 
 const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command { name: "init", summary: "Write a fresh rhizoid.toml" },
@@ -45,6 +45,10 @@ const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command {
         name: "bump",
         summary: "Every pin of a graph in one place; with now, bump each tool pin behind on a branch",
+    },
+    generate::Command {
+        name: "follow",
+        summary: "Lay a release of a source into a base, as ideal-knowledge-base's follow.sh does",
     },
     generate::Command { name: "completions", summary: "Shell completions for rhizoid" },
     generate::Command { name: "man", summary: "The manual page, in roff" },
@@ -95,6 +99,7 @@ enum Request {
     AssembleDone { tag: String, repo: PathBuf, force: bool },
     SendBack(commands::send_back::Ask),
     Bump(commands::bump::Ask),
+    Follow(commands::follow::Ask),
     Completions(Shell),
     Man,
 }
@@ -162,6 +167,25 @@ fn request(r: &Resolution) -> Result<Request, String> {
                 force: Contract::FORCE.get_from(r).unwrap_or(false),
             }
         }
+        Command::Follow if Contract::FOLLOW_EXTRA.get_from(r).is_some() => {
+            return Err("usage: rhizoid follow --source DIR BASE VERSION".to_string())
+        }
+        Command::Follow => Request::Follow(commands::follow::Ask {
+            source: Contract::SOURCE
+                .get_from(r)
+                .filter(|s| !s.is_empty())
+                .ok_or("usage: rhizoid follow --source DIR BASE VERSION")?
+                .into(),
+            base: Contract::FOLLOW_BASE
+                .get_from(r)
+                .filter(|s| !s.is_empty())
+                .ok_or("usage: rhizoid follow --source DIR BASE VERSION")?
+                .into(),
+            version: Contract::FOLLOW_VERSION
+                .get_from(r)
+                .filter(|s| !s.is_empty())
+                .ok_or("usage: rhizoid follow --source DIR BASE VERSION")?,
+        }),
         Command::Bump => Request::Bump(commands::bump::Ask {
             graph: match Contract::GRAPH.get_from(r) {
                 Some(g) => g.into(),
@@ -282,6 +306,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Ok(Request::Follow(ask)) => match commands::follow::run(&ask) {
+            Ok(code) => ExitCode::from(code),
+            Err(e) => {
+                eprintln!("rhizoid: {e}");
+                ExitCode::from(2)
+            }
+        },
         Ok(Request::Bump(ask)) => match commands::bump::run(&ask) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,

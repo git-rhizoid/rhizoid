@@ -124,6 +124,12 @@ pub trait GitPort {
     /// Push `branch` from the worktree at `path` to `origin`, never forced.
     fn push(&self, path: &std::path::Path, branch: &str) -> Result<(), PortError>;
 
+    /// A file's bytes at `rev` (`git show REV:PATH`); `None` when the revision has no such path.
+    fn show(&self, rev: &str, path: &str) -> Result<Option<Vec<u8>>, PortError>;
+
+    /// The URL of the remote `name`; `None` when the clone has no such remote.
+    fn remote_url(&self, name: &str) -> Result<Option<String>, PortError>;
+
     /// Delete the local branch `name` (`git branch -D`).
     fn delete_branch(&self, name: &str) -> Result<(), PortError>;
 

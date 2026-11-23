@@ -4,6 +4,7 @@
 
 pub mod assemble;
 pub mod bump;
+pub mod follow;
 pub mod init;
 pub mod remove;
 pub mod send_back;
