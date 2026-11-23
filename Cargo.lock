@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "rhizoid-cli"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "argenv-resolve",
  "rhizoid-core",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "rhizoid-core"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "schemars",
  "serde",
