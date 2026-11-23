@@ -124,9 +124,9 @@ pub struct Graph {
     /// Forks whose tracking branch should be their upstream's head.
     #[serde(default, rename = "fork")]
     pub forks: Vec<Fork>,
-    /// Kernel clones: their branch and tag scheme, their releases, what assemble made in them.
-    #[serde(default, rename = "kernel")]
-    pub kernels: Vec<crate::kernel::Kernel>,
+    /// Repositories whose branches are assembled into tags: their names, topics, and what assemble made.
+    #[serde(default, rename = "integration")]
+    pub integrations: Vec<crate::integration::Integration>,
 }
 
 impl Graph {

@@ -7,8 +7,9 @@ when you want to. See [`git-rhizoid/git-rhizoid.github.io`](https://github.com/g
 for the design log and current status.
 
 **Status: `rhizoid status` and `rhizoid assemble` work** - status is the first step of the follow tool for every edge a
-repository has (a slice, a tool pin, a fork, a kernel clone); assemble builds a test kernel's integration from a list of branches; `add`, `import`, `update` and `refresh` wait for the GitHub adapter. The rest
-of the repo is the devenv and CI/release scaffolding (from [rustnix](https://github.com/grenudi/rustnix)).
+repository has (a slice, a tool pin, a fork, an integration); assemble merges a named list of branches onto a base into
+a tag, in any repository; `add`, `import`, `update` and `refresh` wait for the GitHub adapter. The rest of the repo is
+the devenv and CI/release scaffolding (from [rustnix](https://github.com/grenudi/rustnix)).
 
 ## rhizoid status
 
@@ -30,19 +31,29 @@ no longer has, then its tags without pruning, so a tag made locally stays), and 
 listed the modules of `rhizoid.toml` and said drift was unknown, is gone: a cutting returns as an edge of the graph
 when cuttings are built (step 4 of the order).
 
-**A kernel edge** (`[[kernel]]`, [`examples/kernel.graph.toml`](examples/kernel.graph.toml)) reads one kernel clone
-against the branch and tag scheme the graph gives it, and against what `rhizoid assemble` made in it. The default
-scheme, field by field, is the structure review's: branches `main`, `master`, `topic/ITEM`, `backport/ITEM/BASE`,
-`wip/LANE/WHAT`; tags `topic/ITEM/vN`, `int/DEVICE/LIST/BASE/N`, `archive/NAME`. Test kernels are `int/` tags, never
-branches, so an `int/` branch is outside it. Upstream release tags (`v6.18`, `v6.18-rc3`, `v6.18.5`) are always in it.
+**An integration edge** (`[[integration]]`) reads one repository whose branches `rhizoid assemble` merges into
+tags, against what the graph gives it - every name is the graph's, none is rhizoid's:
 
-| check | current | otherwise |
-|---|---|---|
-| `kernel-scheme` | every local branch and tag fits the scheme | `moved-by-hand`: one finding for the branches outside it and one for the tags, the first ten named and the rest counted |
-| `topic-base` | a `topic/ITEM` is on the newest release (a stable point release counts, a release candidate does not); a `backport/ITEM/BASE` is on its BASE | `behind` (the release it is on), `moved-by-hand` (a backport off its BASE) |
-| `branch-origin` | every local topic and backport branch is `origin`'s | `behind`: assemble would take the stale local one; `moved-by-hand`: commits `origin` lacks, or diverged |
-| `int-recipe` | the newest tag of each `int/DEVICE/LIST/BASE`: its recipe, read back from its message, names every branch where it is now | `behind`: a branch moved or is gone, so assemble again; `moved-by-hand`: a tag under `int/` with no recipe (not made by assemble) |
-| `worktree-tag` | each worktree assemble locked has its tag's tree and no change | `moved-by-hand`: a different tree, a change, or a tag that was never made; `behind`: an unlocked worktree in a `rhizoid` home, left at a conflict |
+```toml
+[[integration]]
+repo = "acme/app"
+release_prefix = "v"                     # release tags: this, then a digit (v1.4, v1.5-rc2); always in the scheme
+topics = ["feature/ITEM", "fix/ITEM/BASE"]   # the branches lists merge; BASE says what one is based on
+assembled = "candidate/LIST-N"           # the shape of the tags assemble makes here
+scheme = { branches = ["main", "feature/ITEM", "fix/ITEM/BASE"], tags = ["candidate/LIST-N"] }
+```
+
+A pattern is `/`-separated parts, each a literal with a CAPITAL placeholder at its end (`N`: digits; any other: one
+part's text). [`examples/kernel.graph.toml`](examples/kernel.graph.toml) is linux-phone-oco's kernel clone as one
+example. Each check runs only when the edge gives what it needs:
+
+| check | needs | current | otherwise |
+|---|---|---|---|
+| `name-scheme` | `scheme` | every local branch and tag fits it | `moved-by-hand`: one finding for the branches outside it and one for the tags, the first ten named and the rest counted |
+| `topic-base` | `topics` | a topic is on the newest release (a stable point release counts, a release candidate does not), or on the BASE its name says | `behind` (the release it is on), `moved-by-hand` (off its BASE) |
+| `branch-origin` | `topics` | every local topic branch is `origin`'s | `behind`: assemble would take the stale local one; `moved-by-hand`: commits `origin` lacks, or diverged |
+| `recipe` | - | the newest tag of each assembled list and base: its recipe, read back from its message, names every branch where it is now | `behind`: a branch moved or is gone, so assemble again; `moved-by-hand`: a tag of the `assembled` shape with no recipe (made by hand) |
+| `worktree-tag` | - | each worktree assemble locked has its tag's tree and no change | `moved-by-hand`: a different tree, a change, or a tag that was never made; `behind`: an unlocked worktree in a `rhizoid` home, left at a conflict |
 
 A fork and its upstream stay a `[[fork]]` edge. What the clone cannot say (no release tag in it, a topic with no
 release under it, a worktree folder that cannot be read) is `not-known-yet`, which is not drift. Worktrees are read
@@ -52,74 +63,78 @@ taking a lock.
 ## rhizoid assemble
 
 ```
-rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
+rhizoid assemble LIST --lists FILE [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
 rhizoid assemble --done TAG [--repo DIR] [--force]
 ```
 
-Merges one named list of branches, in order, onto its base in a fresh worktree, and tags the result
-`int/DEVICE/LIST/BASE/N` - the integration a test kernel is built from. Run in the kernel clone (or `--repo`), with
-the lab's list file (`--lists`, `RHIZOID_LISTS`, else `kernel/topics.toml` here).
-
-**The list file** is rhizoid's format; each lab owns its own. [`examples/topics.toml`](examples/topics.toml) is one:
+Merges a named list of branches, in order, onto a base in a fresh worktree, and tags the result - in any
+repository (`--repo`, else here). The list file (`--lists`, or `RHIZOID_LISTS`; there is no default) is rhizoid's
+format, and each user keeps its own: every name in it is the file's.
 
 ```toml
-device = "walleye"
+name = "app"                        # optional: {name} in the tag (`device` is read as name, from files written before)
+tag = "candidate/{list}-{n}"        # optional: {name}, {list}, {base} and one {n}; default int/{name}/{list}/{base}/{n}
+                                    #   (int/{list}/{base}/{n} without a name)
+branches = ["feature/ITEM", "fix/ITEM/BASE"]   # optional: the branches a list may name; with none, any branch
 
-[lists.ufs-off]                     # named lists: one tag each
-base = "v6.18"                      # a tag, or a fork's commit
+[lists.release]                     # named lists: one tag each
+base = "v1.4"                       # a tag, or a commit
 
-[[lists.ufs-off.entries]]           # merged in this order
-branch = "topic/panel-s6e3fa7"      # topic/ITEM or backport/ITEM/BASE
-for = "the display panel"           # what it is for
+[[lists.release.entries]]           # merged in this order
+branch = "feature/login"
+for = "the new login"               # what it is for
 state = "known-good"                # known-good (with test_run and tested_commit) or trying
-test_run = "2026-11-20-walleye-display"
-tested_commit = "29d92793b"         # a commit's sha (or a prefix): never HEAD, a branch or a tag, which move
+test_run = "ci-2026-11-20"
+tested_commit = "29d92793b"         # a commit's sha (or a prefix of one): never HEAD, a branch or a tag, which move
 ```
 
-A branch is the local one, else `origin`'s (`entry.N.source=local|origin`); a local branch wins even when `origin`'s has
-moved on, and `rhizoid status` flags it (`branch-origin`). The device, the list name and the base must each fit in one
+[`examples/kernel-topics.toml`](examples/kernel-topics.toml) is linux-phone-oco's kernel lists as one example. A
+branch is the local one, else `origin`'s (`entry.N.source=local|origin`); a local branch wins even when `origin`'s has
+moved on, and `rhizoid status` flags it (`branch-origin`). The name, the list name and the base must each fit in one
 part of a tag name; anything else in the file is refused before anything is made.
 
-**What it does**, in order: reads the base, every branch, each known-good entry's tested commit (resolved to its full
-sha) and the `--reproduces` commit, and stops if one is missing. When the base and every branch are at the commits an
-existing tag's recipe names, that tag is the result: it prints it with `unchanged=yes`, makes no tag, and reuses the
-tag's worktree if one is left. Otherwise it numbers the tag one past the highest `int/DEVICE/LIST/BASE/N`, makes a
-fresh worktree detached at the base in `${AGENT_WORKTREES:-~/.local/share/agent-worktrees}/REPO/rhizoid/` (REPO is the
-main clone's folder name; `DEVICE-LIST-BASE-N`, or `--worktree`, which must be inside that folder - anywhere else is
-refused), turns on the clone's shared rerere memory (`rerere.enabled` in its config: a person's resolution is recorded
-too), and merges each branch with `git merge --no-ff`, rerere replaying what it knows. How each entry went in is
-`entry.N.merged`: `merged`, `rerere-resolved` (its conflict replayed from a recorded resolution) or `already-in` (the
-base or an earlier entry held it; nothing merged). Any other conflict stops the run: it names the entry and the
-earlier entries that changed the same paths, and leaves the worktree mid-merge and unlocked. Resolve it there and
-commit, and rerere remembers the resolution, so the next run gets through; then `git worktree remove` it. When every
-branch is merged, it writes an annotated tag whose message carries the recipe (the base and its sha, every entry with
-its sha), and locks the worktree (`git worktree lock --reason`), so several stay alive until each is ended.
-`--reproduces COMMIT` then compares the tag's tree with the commit's and says `equal`, or lists the paths that differ.
-`--fetch` first fetches every remote, pruning branches they no longer have (never tags: an int tag is made locally).
+**What it does**, in order: reads the base, every branch, each known-good entry's tested commit (resolved, as a sha,
+to its full sha) and the `--reproduces` commit, and stops if one is missing. When the base and every entry (its
+branch's commit, what it is for, its state) equal an existing tag's recipe, that tag is the result: it prints it with
+`unchanged=yes`, makes no tag, and reuses the tag's worktree if one is left (`--worktree` is then refused: it asks for
+a fresh one). Otherwise it numbers the tag one past the highest of its shape, makes a fresh worktree detached at the
+base in `${AGENT_WORKTREES:-~/.local/share/agent-worktrees}/REPO/rhizoid/` (REPO is the main clone's folder name; the
+tag with `-` for `/`, or `--worktree`, which must be inside that folder - anywhere else is refused), turns on the
+clone's shared rerere memory (`rerere.enabled` in its config: a person's resolution is recorded too), and merges each
+branch with `git merge --no-ff`, rerere replaying what it knows. How each entry went in is `entry.N.merged`: `merged`,
+`rerere-resolved` (its conflict replayed from a recorded resolution) or `already-in` (the base or an earlier entry held
+it; nothing merged). Any other conflict stops the run: it names the entry and the earlier entries that changed the
+same paths, and leaves the worktree mid-merge and unlocked. Resolve it there and commit, and rerere remembers the
+resolution, so the next run gets through; then `git worktree remove` it. When every branch is merged, it writes an
+annotated tag whose message carries the recipe (the base and its sha, every entry with its sha), and locks the
+worktree (`git worktree lock --reason`), so several stay alive until each is ended. `--reproduces COMMIT` then compares
+the tag's tree with the commit's and says `equal`, or lists the paths that differ. `--fetch` first fetches every
+remote, pruning branches they no longer have (never tags: an assembled tag is made locally).
 
-**Worktrees end** with `rhizoid assemble --done TAG`: it unlocks and removes the worktree assemble locked for TAG,
-refused when the worktree has changes unless `--force`. The tag stays. A kernel tree is gigabytes checked out, so end
-one as soon as its image is built.
+**Worktrees end** with `rhizoid assemble --done TAG`: it removes the worktree assemble locked for TAG, refused when the
+worktree has changes (or cannot be read) unless `--force`. The tag stays. A large tree is gigabytes checked out, so end
+one as soon as what was built from it is built.
 
 **Its report** is `key=value` lines, or the same as JSON with `--json`; a field added later is a new key:
 
 ```
-device=walleye
-list=ufs-off
-base=v6.18
+name=app
+list=release
+base=v1.4
 base_sha=...
-entry.1.branch=topic/panel-s6e3fa7
+n=1
+entry.1.branch=feature/login
 entry.1.sha=...
 entry.1.source=local
-entry.1.for=the display panel
+entry.1.for=the new login
 entry.1.state=known-good
-entry.1.test_run=2026-11-20-walleye-display
+entry.1.test_run=ci-2026-11-20
 entry.1.tested_commit=29d92793b...  (the full sha)
 entry.1.merged=merged
-topic.panel-s6e3fa7=...             (one per entry: topic.ITEM, or backport.ITEM.BASE)
+feature.login=...                   (one per entry: its branch with . for /, = its sha)
 tested=...                          (the known-good entries' tested commits, space-separated)
-worktree=/home/you/.local/share/agent-worktrees/linux/rhizoid/walleye-ufs-off-v6.18-1
-tag=int/walleye/ufs-off/v6.18/1
+worktree=/home/you/.local/share/agent-worktrees/app/rhizoid/candidate-release-1
+tag=candidate/release-1
 tag_sha=...
 commit=...
 ```
@@ -127,8 +142,8 @@ commit=...
 `unchanged=yes` when an existing tag was the result. At a conflict: `conflict.entry`, `conflict.with`
 (space-separated) and `conflict.path.N`, and no tag. With `--reproduces`: `reproduces.commit`,
 `reproduces=equal|differs` and `reproduces.path.N`. `--done` prints `done=TAG` and `removed=PATH`. It ends 0 when tagged
-(or unchanged) and equal, 1 at a conflict or a difference, 2 when it could not run. rhizoid knows nothing of a lab's
-records: a caller reads the report (`base_sha`, `tag`, `tag_sha`, the `topic.ITEM` lines and `tested` are what a
+(or unchanged) and equal, 1 at a conflict or a difference, 2 when it could not run. rhizoid knows nothing of its
+users' records: a caller reads the report (`base_sha`, `tag`, `tag_sha`, the per-branch lines and `tested` are what a
 test-run record takes) and keeps its own record checks.
 
 Install at a release: `cargo install --git https://github.com/git-rhizoid/rhizoid --tag vX.Y.Z rhizoid-cli`.

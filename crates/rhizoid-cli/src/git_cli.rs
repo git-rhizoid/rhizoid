@@ -88,15 +88,19 @@ impl GitPort for GitCli {
         worktrees(&self.repo).map_err(PortError)
     }
 
-    fn remove_worktree(&self, path: &Path, force: bool) -> Result<(), PortError> {
-        let path = path_arg(path)?;
-        self.ok(&["worktree", "unlock", path])?;
-        let mut args = vec!["worktree", "remove"];
-        if force {
-            args.push("--force");
+    fn remove_worktree(&self, path: &Path) -> Result<(), PortError> {
+        self.ok(&["worktree", "remove", "-f", "-f", path_arg(path)?]).map(drop)
+    }
+
+    fn commit_by_sha(&self, hex: &str) -> Result<Option<String>, PortError> {
+        if !(4..=40).contains(&hex.len()) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok(None);
         }
-        args.push(path);
-        self.ok(&args).map(drop)
+        let out = self.run(&self.repo, &["rev-parse", &format!("--disambiguate={hex}")])?;
+        let objects = lines(&String::from_utf8_lossy(&out.stdout));
+        let [only] = objects.as_slice() else { return Ok(None) };
+        let kind = self.run(&self.repo, &["cat-file", "-t", only])?;
+        Ok((String::from_utf8_lossy(&kind.stdout).trim() == "commit").then(|| only.clone()))
     }
 
     fn tags(&self, prefix: &str) -> Result<Vec<String>, PortError> {

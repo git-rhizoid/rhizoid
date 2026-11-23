@@ -1,20 +1,20 @@
-# A kernel edge for `rhizoid status`: one kernel clone read against its branch and tag scheme, the upstream releases
-# it carries, and what `rhizoid assemble` made in it. Kept apart from linux-phone-oco.graph.toml, whose edges
+# An integration edge for `rhizoid status`, laid out as linux-phone-oco's kernel clone uses it - one example among
+# any. Every name is the graph's choice, not rhizoid's. Kept apart from linux-phone-oco.graph.toml, whose edges
 # tests/agree-with-graph-drift.sh compares one by one with the shell they replace.
 
 [clones]
 "grenudi/linux" = "linux-phone-oco/linux"
 
-[[kernel]]
-clone = "grenudi/linux"
-release_prefix = "v"          # v6.18, v6.18-rc3: always in the scheme
+[[integration]]
+repo = "grenudi/linux"
+release_prefix = "v"                        # v6.18, v6.18-rc3, v6.18.5: always in the scheme
+topics = ["topic/ITEM", "backport/ITEM/BASE"]   # what lists merge: on the newest release, or on BASE; equal to origin's
+assembled = "int/NAME/LIST/BASE/N"          # the tags assemble makes here: one of this shape without a recipe was made by hand
 
-# the scheme of the structure review (2026-11-23; test kernels are int/ tags, never branches) with the clone's main
-# and master: the default when none is given, field by field. A pattern is `/`-separated parts, each a literal with a
-# CAPITAL placeholder at its end (N: digits; any other: one part's text)
-[kernel.scheme]
+# the names branches and tags may have (structure review, 2026-11-23: test kernels are int/ tags, never branches)
+[integration.scheme]
 branches = ["main", "master", "topic/ITEM", "backport/ITEM/BASE", "wip/LANE/WHAT"]
-tags = ["topic/ITEM/vN", "int/DEVICE/LIST/BASE/N", "archive/NAME"]
+tags = ["topic/ITEM/vN", "int/NAME/LIST/BASE/N", "archive/NAME"]
 
 # the fork and its upstream: an edge of its own, read with git ls-remote
 [[fork]]

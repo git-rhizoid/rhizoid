@@ -186,7 +186,7 @@ fn two_topics_assemble_to_a_tag_that_holds_both() {
     assert_eq!(value(&out, "tag_sha").as_deref(), Some(tag_sha.trim()));
 
     let worktree = value(&out, "worktree").unwrap();
-    assert_eq!(PathBuf::from(&worktree), w.home().join("dev-two-v1-1"));
+    assert_eq!(PathBuf::from(&worktree), w.home().join("int-dev-two-v1-1"));
     let list = git_out(&w.repo, &["worktree", "list", "--porcelain"]);
     let entry = list.split("\n\n").find(|e| e.contains(&worktree)).expect("the worktree is git's");
     assert!(entry.contains("locked"), "{entry}");
@@ -293,8 +293,11 @@ fn an_unchanged_list_is_its_tag_and_a_changed_one_the_next_number() {
     let third = w.assemble(&["two"]);
     assert_eq!(third.status.code(), Some(0), "{third:?}");
     assert_eq!(value(&third, "tag").as_deref(), Some("int/dev/two/v1/2"));
-    assert_eq!(value(&third, "worktree").map(PathBuf::from), Some(w.home().join("dev-two-v1-2")));
-    assert!(w.home().join("dev-two-v1-1").is_dir(), "several assembled worktrees stay alive");
+    assert_eq!(
+        value(&third, "worktree").map(PathBuf::from),
+        Some(w.home().join("int-dev-two-v1-2"))
+    );
+    assert!(w.home().join("int-dev-two-v1-1").is_dir(), "several assembled worktrees stay alive");
 }
 
 #[test]
@@ -323,7 +326,7 @@ fn a_missing_branch_or_list_stops_before_anything_is_made() {
         String::from_utf8_lossy(&out.stderr).contains("the file has clash, held, two"),
         "{out:?}"
     );
-    assert!(!w.home().join("dev-two-v1-1").exists());
+    assert!(!w.home().join("int-dev-two-v1-1").exists());
 }
 
 #[test]
@@ -419,7 +422,7 @@ fn the_home_is_named_after_the_main_clone_from_a_linked_worktree() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert_eq!(value(&out, "worktree").map(PathBuf::from), Some(w.home().join("dev-two-v1-1")));
+    assert_eq!(value(&out, "worktree").map(PathBuf::from), Some(w.home().join("int-dev-two-v1-1")));
 }
 
 impl World {
@@ -471,4 +474,50 @@ fn a_tested_commit_must_be_a_commits_sha() {
         assert_eq!(out.status.code(), Some(2), "{name}: {out:?}");
         assert!(String::from_utf8_lossy(&out.stderr).contains("is not a commit's sha"), "{out:?}");
     }
+}
+
+#[test]
+fn any_repository_names_its_own_tags_and_branches() {
+    let w = world();
+    std::fs::write(
+        &w.lists,
+        r#"tag = "candidate/{list}-{n}"
+
+[lists.release]
+base = "v1"
+
+[[lists.release.entries]]
+branch = "topic/a"
+for = "the a part"
+state = "trying"
+"#,
+    )
+    .unwrap();
+    let out = w.assemble(&["release"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(value(&out, "tag").as_deref(), Some("candidate/release-1"));
+    assert_eq!(value(&out, "name"), None, "no name: none printed");
+    assert_eq!(
+        value(&out, "worktree").map(PathBuf::from),
+        Some(w.home().join("candidate-release-1"))
+    );
+    git(&w.repo, &["checkout", "-q", "topic/a"]);
+    commit(&w.repo, &[("a.txt", "a, again\n")], "again");
+    git(&w.repo, &["checkout", "-q", "main"]);
+    assert_eq!(value(&w.assemble(&["release"]), "tag").as_deref(), Some("candidate/release-2"));
+}
+
+#[test]
+fn the_list_file_has_no_default() {
+    let w = world();
+    let out = Command::new(bin())
+        .args(["assemble", "two", "--repo"])
+        .arg(&w.repo)
+        .env("AGENT_WORKTREES", w.root.join("worktrees"))
+        .env_remove("RHIZOID_LISTS")
+        .current_dir(&w.root)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--lists FILE"), "{out:?}");
 }

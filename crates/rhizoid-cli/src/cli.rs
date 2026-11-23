@@ -8,7 +8,7 @@
 //!   rhizoid update [MODULE]
 //!   rhizoid refresh [MODULE]
 //!   rhizoid remove MODULE
-//!   rhizoid status [--graph FILE] [--root DIR] [--fetch] [--json]   every edge of a repository graph (kernel clones too), read-only
+//!   rhizoid status [--graph FILE] [--root DIR] [--fetch] [--json]   every edge of a repository graph, read-only
 //!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
 //!   rhizoid assemble --done TAG [--repo DIR] [--force]  end a tag's worktree
 //!   rhizoid completions SHELL | man | --version | --help
@@ -197,7 +197,7 @@ contract! {
         subcommands: &[Command::Assemble],
         env: Some(Env::new("RHIZOID_LISTS")),
         arg: Some(Arg { value_name: "FILE", ..Arg::long("lists") }),
-        summary: "The lab's list file (kernel/topics.toml here when none is given).",
+        summary: "The list file: its named lists, its tag template, the branches a list may name (no default: every user keeps its own).",
         ..Input::EMPTY
     };
 

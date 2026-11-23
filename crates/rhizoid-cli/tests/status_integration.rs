@@ -1,5 +1,5 @@
-//! `rhizoid status` over a kernel edge: a kernel clone made in a temporary folder, its int tags made by the real
-//! `rhizoid assemble`, then read against its scheme, its releases and what assemble made.
+//! `rhizoid status` over an integration edge: a clone made in a temporary folder, its tags made by the real
+//! `rhizoid assemble`, then read against the graph's scheme and topics, its releases and what assemble made.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -38,8 +38,11 @@ fn commit(dir: &Path, file: &str, text: &str) {
 }
 
 const GRAPH: &str = r#"
-[[kernel]]
-clone = "acme/linux"
+[[integration]]
+repo = "acme/linux"
+topics = ["topic/ITEM", "backport/ITEM/BASE"]
+assembled = "int/NAME/LIST/BASE/N"
+scheme = { branches = ["main", "topic/ITEM", "backport/ITEM/BASE"], tags = ["int/NAME/LIST/BASE/N"] }
 "#;
 
 const LISTS: &str = r#"device = "dev"
@@ -117,7 +120,7 @@ impl World {
     }
 
     fn worktree(&self) -> PathBuf {
-        self.root.join("worktrees/linux/rhizoid/dev-two-v1.1-1")
+        self.root.join("worktrees/linux/rhizoid/int-dev-two-v1.1-1")
     }
 }
 
@@ -135,7 +138,7 @@ fn a_clone_as_assemble_left_it_is_current_on_every_check() {
     let w = world();
     let (code, f) = w.status();
     assert_eq!(code, Some(0), "{f:#?}");
-    assert_eq!(of(&f, "kernel-scheme"), ["current: 3 branches and 3 tags, all in the scheme"]);
+    assert_eq!(of(&f, "name-scheme"), ["current: 3 branches and 3 tags, all in the scheme"]);
     assert_eq!(
         of(&f, "topic-base"),
         [
@@ -144,7 +147,7 @@ fn a_clone_as_assemble_left_it_is_current_on_every_check() {
         ]
     );
     assert_eq!(
-        of(&f, "int-recipe"),
+        of(&f, "recipe"),
         ["current: 2 entries on v1.1; every branch is where the tag took it"]
     );
     let worktree = w.worktree().display().to_string();
@@ -167,7 +170,7 @@ fn each_sign_of_work_outside_the_flow_is_named() {
     let (code, f) = w.status();
     assert_eq!(code, Some(1), "{f:#?}");
     assert_eq!(
-        of(&f, "kernel-scheme"),
+        of(&f, "name-scheme"),
         [
             "moved-by-hand: 2 branches outside the scheme: int/dev/two, stray",
             "moved-by-hand: 1 tags outside the scheme: oops",
@@ -178,10 +181,7 @@ fn each_sign_of_work_outside_the_flow_is_named() {
             .contains(&"behind: topic/old is on v1.0; the newest release is v1.1".to_string()),
         "{f:#?}"
     );
-    assert_eq!(
-        of(&f, "int-recipe"),
-        ["behind: topic/a moved since it was assembled: assemble again"]
-    );
+    assert_eq!(of(&f, "recipe"), ["behind: topic/a moved since it was assembled: assemble again"]);
     let worktree = w.worktree().display().to_string();
     assert_eq!(
         of(&f, "worktree-tag"),
@@ -214,8 +214,11 @@ fn a_tag_under_int_not_made_by_assemble_is_named() {
     git(&w.repo, &["tag", "-a", "-m", "made by hand", "int/dev/two/v1.1/2", "main"]);
     let (_, f) = w.status();
     assert_eq!(
-        of(&f, "int-recipe"),
-        ["moved-by-hand: int/dev/two/v1.1/2 was not made by rhizoid assemble: no recipe in it"]
+        of(&f, "recipe"),
+        [
+            "current: 2 entries on v1.1; every branch is where the tag took it",
+            "moved-by-hand: int/dev/two/v1.1/2 has the shape of an assembled tag but no recipe: made by hand",
+        ]
     );
 }
 
@@ -234,7 +237,7 @@ fn a_worktree_left_at_a_conflict_and_one_locked_for_no_tag_are_named() {
             wt.to_str().unwrap(),
         ],
     );
-    let left = w.root.join("worktrees/linux/rhizoid/dev-two-v1.1-2");
+    let left = w.root.join("worktrees/linux/rhizoid/int-dev-two-v1.1-2");
     git(&w.repo, &["worktree", "add", "-q", "--detach", left.to_str().unwrap(), "v1.1"]);
     let (_, f) = w.status();
     assert_eq!(
@@ -258,7 +261,8 @@ fn a_local_topic_behind_origins_is_flagged_and_fetch_keeps_local_int_tags() {
     git(&w.repo, &["checkout", "-q", "topic/a"]);
     commit(&w.repo, "a.txt", "a, moved on\n");
     git(&w.repo, &["checkout", "-q", "main"]);
-    std::fs::write(&w.graph, "[[kernel]]\nclone = \"acme/clone\"\n").unwrap();
+    std::fs::write(&w.graph, "[[integration]]\nrepo = \"acme/clone\"\ntopics = [\"topic/ITEM\"]\n")
+        .unwrap();
 
     let out = Command::new(bin())
         .args(["status", "--json", "--fetch", "--graph"])

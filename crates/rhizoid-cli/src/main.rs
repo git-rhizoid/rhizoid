@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAN_DATE: &str = "2026-11-23";
-const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), and assemble test kernels from lists of branches (rhizoid assemble)";
+const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), and merge a named list of branches onto a base into a tag (rhizoid assemble)";
 
 const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command { name: "init", summary: "Write a fresh rhizoid.toml" },
@@ -154,10 +154,11 @@ fn request(r: &Resolution) -> Result<Request, String> {
         }
         Command::Assemble => Request::Assemble(commands::assemble::Ask {
             list: Contract::LIST.get_from(r).ok_or("assemble needs the name of a list")?,
-            lists: match Contract::LISTS.get_from(r).filter(|s| !s.is_empty()) {
-                Some(f) => f.into(),
-                None => current_dir()?.join("kernel/topics.toml"),
-            },
+            lists: Contract::LISTS
+                .get_from(r)
+                .filter(|s| !s.is_empty())
+                .ok_or("assemble needs the list file: --lists FILE, or RHIZOID_LISTS")?
+                .into(),
             repo: match Contract::REPO.get_from(r).filter(|s| !s.is_empty()) {
                 Some(d) => d.into(),
                 None => current_dir()?,

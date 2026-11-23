@@ -3,7 +3,7 @@
 //! Git runs with `LC_ALL=C`, so what it says on stderr is what this reads it as.
 
 use rhizoid_core::graph::{Remote, RepoName};
-use rhizoid_core::{Graph, KernelReads, Level, RepoError, Repos, Worktree};
+use rhizoid_core::{Graph, IntegrationReads, Level, RepoError, Repos, Worktree};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -134,7 +134,7 @@ impl GitRepos<'_> {
     }
 }
 
-impl KernelReads for GitRepos<'_> {
+impl IntegrationReads for GitRepos<'_> {
     fn refs(&self, repo: &RepoName, namespace: &str) -> Result<Vec<(String, String)>, RepoError> {
         let format = "--format=%(refname)%00%(objectname)%00%(*objectname)";
         let out = self.read(repo, &["for-each-ref", format, namespace])?;
@@ -181,10 +181,22 @@ impl KernelReads for GitRepos<'_> {
         Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
     }
 
-    fn tag_message(&self, repo: &RepoName, tag: &str) -> Result<String, RepoError> {
-        crate::git_cli::tag_object(&self.clone_dir(repo)?, tag)
-            .map(|(_, message)| message)
-            .map_err(|e| RepoError::Failed(format!("{repo}: {e}")))
+    fn tag_messages(&self, repo: &RepoName) -> Result<Vec<(String, String)>, RepoError> {
+        // one read for every tag: an annotated one's message, each record ended by NUL and git's newline
+        let format = "--format=%(objecttype)%00%(refname:strip=2)%00%(contents)%00";
+        let out = self.read(repo, &["for-each-ref", format, "refs/tags/"])?;
+        Ok(out
+            .split("\0\n")
+            .filter_map(|record| {
+                let mut f = record.splitn(3, '\0');
+                match (f.next(), f.next(), f.next()) {
+                    (Some("tag"), Some(name), Some(message)) => {
+                        Some((name.to_string(), message.to_string()))
+                    }
+                    _ => None,
+                }
+            })
+            .collect())
     }
 
     fn tree_equal(&self, repo: &RepoName, a: &str, b: &str) -> Result<bool, RepoError> {

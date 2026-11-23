@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 pub struct Ask {
     /// The list's name in the file.
     pub list: String,
-    /// The lab's list file.
+    /// The list file.
     pub lists: PathBuf,
     /// The clone the branches are in.
     pub repo: PathBuf,
@@ -45,7 +45,8 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
     let report = assemble(
         &git,
         &CoreAsk {
-            device: &lists.device,
+            name: lists.name.as_deref(),
+            tag: &lists.tag,
             list_name: &ask.list,
             list,
             home: &home,

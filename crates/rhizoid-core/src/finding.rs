@@ -53,14 +53,14 @@ pub enum Check {
     ToolListed,
     /// A fork's tracking branch against its upstream's head.
     ForkTrack,
-    /// A kernel clone's branch and tag names against its scheme.
-    KernelScheme,
+    /// A repository's branch and tag names against the scheme its graph gives.
+    NameScheme,
     /// A topic against the newest release, a backport against the base its name says.
     TopicBase,
-    /// A local topic or backport branch against `origin`'s of the same name.
+    /// A local topic branch against `origin`'s of the same name.
     BranchOrigin,
-    /// An int tag's recipe, read back from its message, against the branches now.
-    IntRecipe,
+    /// An assembled tag's recipe, read back from its message, against the branches now.
+    Recipe,
     /// An assembled worktree against its tag.
     WorktreeTag,
 }
@@ -79,10 +79,10 @@ impl Check {
             Check::ToolPin => "tool-pin",
             Check::ToolListed => "tool-listed",
             Check::ForkTrack => "fork-track",
-            Check::KernelScheme => "kernel-scheme",
+            Check::NameScheme => "name-scheme",
             Check::TopicBase => "topic-base",
             Check::BranchOrigin => "branch-origin",
-            Check::IntRecipe => "int-recipe",
+            Check::Recipe => "recipe",
             Check::WorktreeTag => "worktree-tag",
         }
     }

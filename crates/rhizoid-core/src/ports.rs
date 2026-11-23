@@ -46,10 +46,15 @@ pub trait GitPort {
     fn tag_object(&self, name: &str) -> Result<(String, String), PortError>;
 
     /// The clone's worktrees.
-    fn worktrees(&self) -> Result<Vec<crate::kernel::Worktree>, PortError>;
+    fn worktrees(&self) -> Result<Vec<crate::integration::Worktree>, PortError>;
 
-    /// Unlock the worktree at `path`, then remove it (`--force`: even with changes in it).
-    fn remove_worktree(&self, path: &std::path::Path, force: bool) -> Result<(), PortError>;
+    /// Remove the worktree at `path`, locked or not, changes and all (`git worktree remove -f -f`): whether it
+    /// may go is decided before.
+    fn remove_worktree(&self, path: &std::path::Path) -> Result<(), PortError>;
+
+    /// The full sha of the one commit whose sha starts with `hex`, read as a sha and never as a ref name;
+    /// `None` when `hex` is not hex, names no commit, or names several objects.
+    fn commit_by_sha(&self, hex: &str) -> Result<Option<String>, PortError>;
 
     /// Turn on the clone's shared rerere memory (`rerere.enabled` in its config), so every hand on the clone -
     /// rhizoid, a person resolving a conflict - records and replays the same resolutions.
