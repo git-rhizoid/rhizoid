@@ -11,6 +11,7 @@ pub mod module;
 pub mod pattern;
 pub mod ports;
 pub mod repos;
+pub mod sendback;
 pub mod status;
 pub mod text;
 
@@ -19,6 +20,9 @@ pub use graph::{Graph, RepoName};
 pub use integration::{integration_status, IntegrationReads, Worktree};
 pub use manifest::{Defaults, Manifest, ModuleEntry, ModuleOrigin};
 pub use module::ModuleMetadata;
-pub use ports::{BranchSource, GitHubPort, GitPort, MergeOutcome, MergeResult, PortError};
+pub use ports::{
+    BranchSource, CommandPort, FormatPatch, GitHubPort, GitPort, MergeOutcome, MergeResult,
+    PortError, RebaseResult,
+};
 pub use repos::{Level, RepoError, Repos};
 pub use status::status;

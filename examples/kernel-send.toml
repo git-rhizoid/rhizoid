@@ -1,0 +1,25 @@
+# rhizoid's config for `rhizoid send-back`, as a Linux kernel tree would use it - one example among any. Every
+# name and command is the config's, not rhizoid's. Checks run in the rebased worktree, in order; any exit but 0 is
+# a failed check, and the version is tagged only when none failed. A check's exceptions are its own arguments.
+
+[send]
+branch = "send/{leaf}/v{n}"         # the send branch ({branch}, {leaf}, one {n}); this is the default
+tag = "{branch}/v{n}"               # the version tag; this is the default
+
+[[send.check]]
+name = "checkpatch"
+run = ["scripts/checkpatch.pl", "--strict", "--ignore", "FILE_PATH_CHANGES"]
+patches = true                      # the patch files (no cover letter) are appended
+
+[[send.check]]
+name = "w1"
+run = ["make", "-j8", "W=1", "drivers/gpu/drm/panel/"]
+
+[[send.check]]
+name = "dt-check"
+run = ["make", "dt_binding_check", "DT_SCHEMA_FILES=display/panel"]
+
+[send.recipients]                   # each line it prints is a recipient; rhizoid sends nothing
+name = "get_maintainer"
+run = ["scripts/get_maintainer.pl", "--no-rolestats"]
+patches = true

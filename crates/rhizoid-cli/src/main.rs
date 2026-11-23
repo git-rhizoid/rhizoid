@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAN_DATE: &str = "2026-11-23";
-const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), and merge a named list of branches onto a base into a tag (rhizoid assemble)";
+const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), merge a named list of branches onto a base into a tag (rhizoid assemble), and make a branch a series version for its upstream (rhizoid send-back)";
 
 const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command { name: "init", summary: "Write a fresh rhizoid.toml" },
@@ -38,6 +38,10 @@ const COMMANDS: &[generate::Command<'static>] = &[
         name: "assemble",
         summary: "Merge a named list of branches onto its base in a fresh worktree, and tag it int/DEVICE/LIST/BASE/N",
     },
+    generate::Command {
+        name: "send-back",
+        summary: "Make a branch a series version for its upstream: rebased, cut, range-diffed, checked, tagged",
+    },
     generate::Command { name: "completions", summary: "Shell completions for rhizoid" },
     generate::Command { name: "man", summary: "The manual page, in roff" },
 ];
@@ -49,8 +53,8 @@ fn program() -> Program<'static> {
         about: ABOUT,
         commands: COMMANDS,
         exit_status: &[
-            ("0", "done; for status, no edge is drift; for assemble, tagged (and equal to --reproduces)"),
-            ("1", "status found drift; assemble stopped at a conflict or differs from --reproduces; or the command failed"),
+            ("0", "done; for status, no edge is drift; for assemble, tagged (and equal to --reproduces); for send-back, the version tagged"),
+            ("1", "status found drift; assemble stopped at a conflict or differs from --reproduces; send-back stopped at a conflict or a check failed; or the command failed"),
             ("2", "the invocation is wrong, or status or assemble could not read or change the repositories it was asked about"),
         ],
         see_also: &["git(1)", "gh(1)"],
@@ -85,6 +89,7 @@ enum Request {
     Status(Ask),
     Assemble(commands::assemble::Ask),
     AssembleDone { tag: String, repo: PathBuf, force: bool },
+    SendBack(commands::send_back::Ask),
     Completions(Shell),
     Man,
 }
@@ -152,6 +157,35 @@ fn request(r: &Resolution) -> Result<Request, String> {
                 force: Contract::FORCE.get_from(r).unwrap_or(false),
             }
         }
+        Command::SendBack => Request::SendBack(commands::send_back::Ask {
+            branch: Contract::BRANCH
+                .get_from(r)
+                .filter(|s| !s.is_empty())
+                .ok_or("send-back needs the branch to send")?,
+            onto: Contract::ONTO
+                .get_from(r)
+                .filter(|s| !s.is_empty())
+                .ok_or("send-back needs --onto REF: the target tree it is for")?,
+            out: Contract::OUT
+                .get_from(r)
+                .filter(|s| !s.is_empty())
+                .ok_or("send-back needs --out DIR: the folder the series goes in")?
+                .into(),
+            repo: match Contract::REPO.get_from(r).filter(|s| !s.is_empty()) {
+                Some(d) => d.into(),
+                None => current_dir()?,
+            },
+            worktrees: match Contract::AGENT_WORKTREES.get_from(r).filter(|s| !s.is_empty()) {
+                Some(d) => d.into(),
+                None => {
+                    commands::assemble::default_worktrees(Contract::HOME.get_from(r).as_deref())?
+                }
+            },
+            config: Contract::CONFIG.get_from(r).filter(|s| !s.is_empty()).map(Into::into),
+            tested: Contract::TESTED.get_from(r).filter(|s| !s.is_empty()),
+            fork: Contract::FORK.get_from(r).filter(|s| !s.is_empty()),
+            json: Contract::JSON.get_from(r).unwrap_or(false),
+        }),
         Command::Assemble => Request::Assemble(commands::assemble::Ask {
             list: Contract::LIST.get_from(r).ok_or("assemble needs the name of a list")?,
             lists: Contract::LISTS
@@ -221,6 +255,14 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Ok(Request::SendBack(ask)) => match commands::send_back::run(&ask) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("rhizoid: {e}");
+                ExitCode::from(2)
+            }
+        },
         Ok(Request::Assemble(ask)) => match commands::assemble::run(&ask) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,

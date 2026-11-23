@@ -85,6 +85,73 @@ pub trait GitPort {
 
     /// The paths whose content differs between the trees of `a` and `b`; empty when the trees are equal.
     fn tree_diff(&self, a: &str, b: &str) -> Result<Vec<String>, PortError>;
+
+    /// A fresh worktree at `path` on a new branch `branch` made at `commit` (`git worktree add -b`).
+    fn add_branch_worktree(
+        &self,
+        path: &std::path::Path,
+        branch: &str,
+        commit: &str,
+    ) -> Result<(), PortError>;
+
+    /// How many commits `to` has that `from` lacks.
+    fn count(&self, from: &str, to: &str) -> Result<u64, PortError>;
+
+    /// Delete the local branch `name` (`git branch -D`).
+    fn delete_branch(&self, name: &str) -> Result<(), PortError>;
+
+    /// Rebase the worktree's branch onto `onto`, keeping authorship and never signing; at a conflict the
+    /// worktree is left mid-rebase.
+    fn rebase(&self, path: &std::path::Path, onto: &str) -> Result<RebaseResult, PortError>;
+
+    /// `git format-patch --cover-letter -vN --base=BASE` of `range` into `out`, with `--range-diff` against
+    /// the previous version when given; the files written, in order.
+    fn format_patch(
+        &self,
+        path: &std::path::Path,
+        patches: &FormatPatch,
+    ) -> Result<Vec<String>, PortError>;
+}
+
+/// How a rebase ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RebaseResult {
+    /// Every commit was replayed.
+    Done,
+    /// It stopped replaying this commit, with these paths in conflict.
+    Conflict {
+        /// The commit it could not replay.
+        commit: String,
+        /// Its subject.
+        subject: String,
+        /// The unmerged paths.
+        paths: Vec<String>,
+    },
+}
+
+/// What `format_patch` is asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatPatch {
+    /// The commits: `BASE..TIP`.
+    pub range: String,
+    /// The series version (`-vN`).
+    pub version: u32,
+    /// The base commit (`--base`).
+    pub base: String,
+    /// The previous version's commits (`PREV_BASE..PREV_TIP`), for `--range-diff`.
+    pub range_diff: Option<String>,
+    /// The folder the files go in.
+    pub out: std::path::PathBuf,
+}
+
+/// Running the commands a user configures (checks, recipients): rhizoid knows them only as argv and exit code.
+pub trait CommandPort {
+    /// Run `argv` in `dir`; its exit code (`None`: killed by a signal) and what it printed, stdout then stderr.
+    fn run(
+        &self,
+        argv: &[String],
+        dir: &std::path::Path,
+    ) -> Result<(Option<i32>, String, String), PortError>;
 }
 
 /// Where a branch was found.

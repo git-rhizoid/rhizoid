@@ -73,7 +73,7 @@ pub fn render(report: &Report, json: bool) -> String {
 
 /// rhizoid's worktree home for a clone, `WORKTREES/CLONE/rhizoid` (named after the main clone's folder), as
 /// real a path as exists yet; git makes the folders when it adds the first worktree.
-fn rhizoid_home(worktrees: &Path, clone: &Path) -> Result<PathBuf, String> {
+pub fn rhizoid_home(worktrees: &Path, clone: &Path) -> Result<PathBuf, String> {
     let name =
         clone.file_name().ok_or_else(|| format!("{} has no folder name", clone.display()))?;
     real_as_far_as_it_exists(&worktrees.join(name).join("rhizoid"))
@@ -81,7 +81,7 @@ fn rhizoid_home(worktrees: &Path, clone: &Path) -> Result<PathBuf, String> {
 
 /// `wanted` (relative to the current folder) with its longest existing part resolved to a real path, so a
 /// symbolic link cannot carry it outside the home; `.` and `..` in what does not exist yet are kept, and refused.
-fn real_as_far_as_it_exists(wanted: &Path) -> Result<PathBuf, String> {
+pub fn real_as_far_as_it_exists(wanted: &Path) -> Result<PathBuf, String> {
     let cwd =
         std::env::current_dir().map_err(|e| format!("cannot read the current folder: {e}"))?;
     let full = cwd.join(wanted);
