@@ -12,6 +12,7 @@ path = [
   "tests/**",
   "bin/**",
   "nix/**",
+  "packaging/**",
   ".github/**",
   ".cargo/**",
   ".envrc",

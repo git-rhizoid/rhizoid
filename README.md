@@ -242,7 +242,7 @@ conflict or a failed check, 2 when it could not run.
 ## rhizoid bump
 
 ```
-rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--fetch] [--push] [--pr] [--json]
+rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--fetch] [--push] [--pr] [--land] [--json]
 ```
 
 Every pin of a graph in one place - each pin where its own reader reads it, listed here together: each `[[tool]]` and `[[slice]]` follower, the file and value that pins it, and the
@@ -265,8 +265,20 @@ outside the follower, one whose pin file is not the graph's, and a gate that cha
 follower's own checkout is never touched, and the worktree always goes. The commit is the pin and the files the tool names in `also`: a gate that changes any other
 file is refused (`refused`, with why), and a bump commit is never signed. `--fetch` fetches each clone first, as status does - a tag `origin` moved is kept and said as a `finding.N` line after the pins (on stderr with `--json`, whose stdout stays the pins; the exit still says only how the pins stand) - and a
 branch already on `origin` counts as `branch-exists`. Every failed git call names the command and what git said, never an empty error. When the pull request command fails after the push, the branch
-stays, pushed, and `pin.N.pr_error` says why. `--push` and `--pr` go only with `now`. A `gate` is argv from the graph
-file, run with `now`: run `bump now` only on a graph you trust.
+stays, pushed, and `pin.N.pr_error` says why. `--land` pushes, opens the pull request and runs the graph's `[bump]`
+`land` command (argv, e.g. `land = ["land"]`) in the bump's worktree on its branch: `pin.N.landed=yes` when it
+landed through the follower's checks; when a check or the gate refused, the pull request stays open,
+`pin.N.landed=no` and `pin.N.land_error` says why, and the run ends 1. A later run finds the branch and says
+`branch-exists`, never landing it again: a refused bump waits for a hand (`land` from its branch). A landed bump
+leaves no local branch. `--push`, `--pr` and `--land` go only with
+`now`. A `gate` and the land command are argv from the graph file, run with `now`: run `bump now` only on a graph
+you trust.
+
+**On a timer.** [`packaging/systemd/rhizoid-bump.service`](packaging/systemd/rhizoid-bump.service) and its `.timer`
+run `bump now --fetch --land` hourly as a user unit, on idealkb-update-pins' pattern: the graph read from
+`origin/main` of the clone `RHIZOID_GRAPH_CLONE` names in `~/.config/rhizoid/bump.env` (`RHIZOID_GRAPH_FILE` when it
+is not `rhizoid.graph.toml`), the token from the lab's private file at run time. Install: copy both to
+`~/.config/systemd/user/`, write the env file (absolute paths: it expands no `~`), `systemctl --user enable --now rhizoid-bump.timer`.
 
 A tool pin is a TOML `key` or a `line` (as for `status`); a key whose value carries more than the version says how,
 and an attended pin names the check a bump must pass:

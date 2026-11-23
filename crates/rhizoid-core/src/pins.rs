@@ -363,6 +363,12 @@ pub enum Bumped {
         pr: Option<String>,
         /// The pull request command failed, the branch pushed: open it by hand.
         pr_error: Option<String>,
+        /// Landed through the follower's checks (`--land`).
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        landed: bool,
+        /// The land command failed - a check or the gate refused: the pull request stays open, and this says why.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        land_error: Option<String>,
     },
     /// Its branch exists already: an earlier bump, not merged yet.
     BranchExists {
@@ -544,6 +550,11 @@ fn on_branch(
     let outcome = change(&worktree);
     let _ = git.remove_worktree(&worktree);
     match outcome {
+        // once landed, the change is on main and the local branch is litter
+        Ok(b @ Bumped::Bumped { landed: true, .. }) => {
+            let _ = git.delete_branch(branch);
+            Ok(b)
+        }
         // once committed, the branch is kept: pushed or not, it is the bump
         Ok(b @ Bumped::Bumped { .. }) => Ok(b),
         Ok(other) => {
@@ -595,7 +606,23 @@ fn commit_push_pr(
             Err(e) => pr_error = Some(e.0),
         }
     }
-    Ok(Bumped::Bumped { branch: branch.to_string(), pushed, pr, pr_error })
+    let (mut landed, mut land_error) = (false, None);
+    if let (Some(command), Some(_)) = (at.land, &pr) {
+        match cmd.run(command, worktree) {
+            Ok((Some(0), _, _)) => landed = true,
+            Ok((exit, stdout, stderr)) => {
+                let said = format!("{stdout}{stderr}").trim().to_string();
+                let code = exit.map_or("a signal".to_string(), |c| format!("exit {c}"));
+                land_error = Some(if said.is_empty() {
+                    format!("ended with {code}, saying nothing")
+                } else {
+                    said
+                })
+            }
+            Err(e) => land_error = Some(e.0),
+        }
+    }
+    Ok(Bumped::Bumped { branch: branch.to_string(), pushed, pr, pr_error, landed, land_error })
 }
 
 /// Where a bump happens and how far it goes.
@@ -608,6 +635,8 @@ pub struct BumpAt<'a> {
     pub push: bool,
     /// The pull request command (argv, `{branch}` in it replaced), run once pushed.
     pub pr: Option<&'a [String]>,
+    /// The land command (argv), run in the worktree on the branch once its pull request is open.
+    pub land: Option<&'a [String]>,
 }
 
 #[cfg(test)]

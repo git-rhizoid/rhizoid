@@ -527,3 +527,77 @@ fn a_pin_whose_tag_name_is_written_twice_is_named_and_refused() {
         "{report}"
     );
 }
+
+/// bump with a stand-in gh that opens every pull request and the graph's [bump] land = `land`.
+fn bump_landing(w: &World, land: &str, args: &[&str]) -> Output {
+    let graph = std::fs::read_to_string(&w.graph).unwrap();
+    let land = format!("\n[bump]\nland = [\"sh\", \"-c\", {land:?}]\n");
+    std::fs::write(&w.graph, format!("{graph}{land}")).unwrap();
+    let fake = w.root.join("fakebin");
+    std::fs::create_dir_all(&fake).unwrap();
+    std::fs::write(fake.join("gh"), "#!/bin/sh\necho https://example.org/pr/1\n").unwrap();
+    assert!(Command::new("chmod").arg("+x").arg(fake.join("gh")).status().unwrap().success());
+    let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
+    Command::new(bin())
+        .args(["bump", "now", "--land"])
+        .args(args)
+        .arg("--graph")
+        .arg(&w.graph)
+        .arg("--root")
+        .arg(&w.root)
+        .env("AGENT_WORKTREES", w.root.join("worktrees"))
+        .env("PATH", path)
+        .envs(IDENTITY)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn land_brings_each_bump_to_main_through_the_land_command() {
+    let w = world(PASSING_GATE);
+    // a land stand-in whose checks pass: it merges the branch into main
+    let land = "case $(git branch --show-current) in rhizoid/bump/*) ;; *) exit 9 ;; esac; git fetch -q origin main && git merge -q --no-edit FETCH_HEAD && git push -q origin HEAD:main";
+    let out = bump_landing(&w, land, &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    for n in 1..=3 {
+        assert_eq!(value(&out, &format!("pin.{n}.landed")).as_deref(), Some("yes"), "{out:?}");
+        assert_eq!(
+            value(&out, &format!("pin.{n}.pr")).as_deref(),
+            Some("https://example.org/pr/1")
+        );
+    }
+    let main = git(&w.bare, &["show", "main:lab.toml"]);
+    assert!(main.contains("lpoco = \"1.1.0\""), "{main}");
+    assert!(git(&w.bare, &["show", "main:idealkb.toml"]).contains("version = \"0.2.0\""));
+    assert_eq!(
+        git(&w.lab, &["branch", "--list", "rhizoid/*"]),
+        "",
+        "a landed bump leaves no branch"
+    );
+}
+
+#[test]
+fn a_land_that_fails_keeps_the_pull_request_and_says_why() {
+    let w = world(PASSING_GATE);
+    let out = bump_landing(&w, "echo 'land: check ci failed' >&2; exit 1", &["--only", "acme/lab"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(value(&out, "pin.1.state").as_deref(), Some("bumped"));
+    assert_eq!(value(&out, "pin.1.pushed").as_deref(), Some("yes"));
+    assert_eq!(value(&out, "pin.1.landed").as_deref(), Some("no"));
+    assert_eq!(value(&out, "pin.1.land_error").as_deref(), Some("land: check ci failed"));
+    assert!(git(&w.bare, &["branch", "--list", "rhizoid/*"]).contains("rhizoid/bump/lpoco-1.1.0"));
+    assert!(
+        git(&w.bare, &["show", "main:lab.toml"]).contains("lpoco = \"1.0.0\""),
+        "main untouched"
+    );
+}
+
+#[test]
+fn land_needs_now_and_a_land_command_in_the_graph() {
+    let w = world(PASSING_GATE);
+    let out = w.bump(&["--land"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let out = w.bump(&["now", "--land"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("[bump] land"), "{out:?}");
+}

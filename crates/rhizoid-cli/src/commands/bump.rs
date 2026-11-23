@@ -17,6 +17,7 @@ pub struct Ask {
     pub now: bool,
     pub push: bool,
     pub pr: bool,
+    pub land: bool,
     pub only: Option<String>,
     pub fetch: bool,
     pub json: bool,
@@ -39,14 +40,19 @@ struct Row {
 
 /// Print every pin; whether all is as asked.
 pub fn run(ask: &Ask) -> Result<bool, String> {
-    if !ask.now && (ask.push || ask.pr) {
-        return Err(
-            "--push and --pr change followers' remotes: they go with `bump now`".to_string()
-        );
+    if !ask.now && (ask.push || ask.pr || ask.land) {
+        return Err("--push, --pr and --land change followers' remotes: they go with `bump now`"
+            .to_string());
     }
     let text = std::fs::read_to_string(&ask.graph)
         .map_err(|e| format!("cannot read the graph file {}: {e}", ask.graph.display()))?;
     let graph = Graph::parse(&text).map_err(|e| format!("{}: {e}", ask.graph.display()))?;
+    if ask.land && graph.bump.land.is_none() {
+        return Err(format!(
+            "--land runs the graph's [bump] land command, and {} names none (land = [\"land\"])",
+            ask.graph.display()
+        ));
+    }
     let repos = GitRepos::new(&ask.root, &graph, ask.fetch);
     let pins: Vec<Pin> = plan(&graph, &repos)
         .map_err(|e| e.to_string())?
@@ -99,7 +105,12 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
     // with `now`, how the pins another job moves stand is that job's to say
     Ok(rows.iter().filter(|r| !ask.now || r.pin.moved_by_bump()).all(|r| match r.state {
         "current" | "branch-exists" => true,
-        "bumped" => !matches!(&r.bump, Some(Bumped::Bumped { pr_error: Some(_), .. })),
+        "bumped" => match &r.bump {
+            Some(Bumped::Bumped { pr_error, landed, .. }) => {
+                pr_error.is_none() && (*landed || !ask.land)
+            }
+            _ => false,
+        },
         _ => false,
     }))
 }
@@ -127,7 +138,8 @@ fn bump_one(ask: &Ask, graph: &Graph, pin: &Pin) -> Result<Bumped, String> {
         rev: &graph.rev,
         home: &home,
         push: ask.push,
-        pr: ask.pr.then_some(pr.as_slice()),
+        pr: (ask.pr || ask.land).then_some(pr.as_slice()),
+        land: if ask.land { graph.bump.land.as_deref() } else { None },
     };
     match (pin.tool, pin.slice) {
         (Some(t), _) => bump(&git, &Programs, &graph.tools[t], pin, &at).map_err(|e| e.to_string()),
@@ -169,7 +181,7 @@ fn render(rows: &[Row], json: bool) -> String {
         put(k("latest"), &r.pin.latest);
         put(k("state"), r.state);
         match &r.bump {
-            Some(Bumped::Bumped { branch, pushed, pr, pr_error }) => {
+            Some(Bumped::Bumped { branch, pushed, pr, pr_error, landed, land_error }) => {
                 put(k("branch"), branch);
                 put(k("pushed"), if *pushed { "yes" } else { "no" });
                 if let Some(pr) = pr {
@@ -177,6 +189,13 @@ fn render(rows: &[Row], json: bool) -> String {
                 }
                 if let Some(e) = pr_error {
                     put(k("pr_error"), e.lines().last().unwrap_or(""));
+                }
+                if *landed {
+                    put(k("landed"), "yes");
+                }
+                if let Some(e) = land_error {
+                    put(k("landed"), "no");
+                    put(k("land_error"), e.lines().last().unwrap_or(""));
                 }
             }
             Some(Bumped::BranchExists { branch }) => put(k("branch"), branch),
