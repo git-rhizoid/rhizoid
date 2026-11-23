@@ -1,0 +1,80 @@
+name: Assets
+
+# rhizoid's x86_64 Linux binary as a release asset, the way linux-phone-oco/lab-tools attaches its programs: after
+# a Release run, when the commit carries a vX.Y.Z tag, `rhizoid` is built once at that tag and attached to release
+# vX.Y.Z as rhizoid-x86_64-unknown-linux-gnu, with rhizoid-x86_64-unknown-linux-gnu.sha256 beside it (the hash
+# uploaded first). A host installs it as `rhizoid` and checks the hash (lpoco-host). workflow_dispatch with a tag
+# attaches them to a release made before this workflow existed.
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the binary to (default - the vX.Y.Z tag on main's head)
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: assets-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  assets:
+    name: build and attach
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: which release?
+        id: tag
+        env:
+          TAG_IN: ${{ inputs.tag }}
+        run: |
+          tag="$TAG_IN"
+          if [ -z "$tag" ]; then
+            tag=$(git tag --points-at HEAD --list 'v*' | head -n 1)
+          fi
+          if [ -z "$tag" ]; then
+            echo "no vX.Y.Z tag on this commit: nothing released, nothing to attach"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! printf '%s\n' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "not a release tag: $tag"
+            exit 1
+          fi
+          git checkout --quiet "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.tag.outputs.tag != ''
+      # .cargo/config.toml links with mold (on PATH through the Nix devshell locally, not on the runner)
+      - name: Install mold
+        if: steps.tag.outputs.tag != ''
+        run: sudo apt-get update && sudo apt-get install -y mold
+      - name: build
+        if: steps.tag.outputs.tag != ''
+        run: cargo build --release --locked --target "$TARGET" -p rhizoid-cli
+      - name: attach
+        if: steps.tag.outputs.tag != ''
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          f="rhizoid-$TARGET"
+          mkdir -p dist
+          cp "target/$TARGET/release/rhizoid" "dist/$f"
+          "dist/$f" --version
+          (cd dist && sha256sum "$f" > "$f.sha256")
+          # the hash first: a host that fetches between the two sees a missing asset hash, never a stale one
+          gh release upload "$TAG" "dist/$f.sha256" --clobber
+          gh release upload "$TAG" "dist/$f" --clobber

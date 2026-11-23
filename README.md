@@ -227,7 +227,16 @@ with, or `none`), `check.N.name`, `check.N.exit` and `check.N.counts=no` for a r
 a conflict `conflict.commit`, `conflict.subject` and `conflict.path.N`. It ends 0 when the draft is tagged, 1 at a
 conflict or a failed check, 2 when it could not run.
 
-Install at a release: `cargo install --git https://github.com/git-rhizoid/rhizoid --tag vX.Y.Z rhizoid-cli`.
+Install at a release: the x86_64 Linux binary is attached to every release, with its sha256 beside it
+(`.github/workflows/assets.yml`):
+
+```
+curl -fsSLO https://github.com/git-rhizoid/rhizoid/releases/download/vX.Y.Z/rhizoid-x86_64-unknown-linux-gnu.sha256
+curl -fsSLO https://github.com/git-rhizoid/rhizoid/releases/download/vX.Y.Z/rhizoid-x86_64-unknown-linux-gnu
+sha256sum -c rhizoid-x86_64-unknown-linux-gnu.sha256 && install -m 755 rhizoid-x86_64-unknown-linux-gnu ~/.local/bin/rhizoid
+```
+
+or from source: `cargo install --git https://github.com/git-rhizoid/rhizoid --tag vX.Y.Z rhizoid-cli`.
 
 The rest of this README documents the devenv this project is built with - Nix + direnv giving a
 full Rust toolchain and an isolated, pre-configured VSCodium automatically, every time you `cd`
