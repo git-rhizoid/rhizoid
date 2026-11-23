@@ -285,7 +285,12 @@ attribute is read at the graph's revision (`git check-attr --source`, git 2.40 o
 `info/attributes` counts too, a global attributes file does not), so no list lives in rhizoid or the graph. Each tool pin of its own that is behind is bumped in its follower's clone: a branch `rhizoid/bump/TOOL-VERSION` from the
 graph's revision, in a fresh worktree; only the pinned value edited, the rest of the file as it was, and the edit read
 back before it is committed (a value that appears twice, or does not read back, is `refused`, left to a hand); the
-tool's `gate`, when it has one, passed before the commit (`gated-out` commits nothing); `--push` pushes the branch to
+tool's `gate`, when it has one, passed before the commit (`gated-out`: nothing committed - but with `--pr` or `--land` the failed bump is committed on
+its branch, pushed and opened as a draft pull request carrying the gate's argv, exit and the last lines it printed,
+never landed, so the follower's people see the one check that failed; a later run says `branch-exists` and opens
+nothing, and a newer release's pull request for the same pin closes the earlier one with a comment naming it,
+`pin.N.replaced`; one it could not close ends the run 1 with `pin.N.replace_error`, and a branch pushed whose pull
+request could not be opened (`pin.N.pr_error`) waits for a hand, as a later run says `branch-exists`); `--push` pushes the branch to
 the follower's `origin`, `--pr` also opens its pull request (`gh pr create --fill`). A branch already there is
 `branch-exists`. A slice pin of its own that is behind is moved through `follow` the same way: a branch
 `rhizoid/bump/OWNER-REPO-VERSION`, the release laid into the fresh worktree as idealkb's follow.sh lays it (the pin moved

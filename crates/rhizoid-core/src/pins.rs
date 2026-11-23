@@ -388,12 +388,23 @@ pub enum Bumped {
         /// The branch.
         branch: String,
     },
-    /// The gate failed: nothing was committed.
+    /// The gate failed: never landed. With a pull request asked for, the bump is committed on its branch, pushed
+    /// and opened as a draft carrying the gate's output, so the follower's people see it; otherwise nothing is
+    /// committed.
     GatedOut {
         /// The gate's exit code.
         exit: Option<i32>,
         /// What it printed.
         output: String,
+        /// The branch the failed bump was committed on, when a draft was asked for.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// The draft pull request's address.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pr: Option<String>,
+        /// The draft could not be opened: why.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pr_error: Option<String>,
     },
     /// The edit was not certain (the value twice, or not read back): moved by hand.
     Refused {
@@ -424,7 +435,11 @@ pub fn bump(
         };
         std::fs::write(&path, edited).map_err(io)?;
         if let Some(out) = gated(cmd, tool.gate.as_deref(), worktree)? {
-            return Ok(out);
+            let mut files = vec![pin.file.clone()];
+            files.extend(tool.also.iter().filter(|f| worktree.join(f).exists()).cloned());
+            let message = format!("chore(deps): {} {old} -> {}", tool.name, pin.latest);
+            let failed = Failed { gate: tool.gate.as_deref().unwrap_or_default(), out };
+            return draft_gated(git, cmd, at, worktree, &branch, &files, &message, failed);
         }
         // the commit is the pin and what the tool names in `also`: a gate that changed anything else is refused
         let others: Vec<String> = git
@@ -523,7 +538,9 @@ pub fn bump_slice(
         }
         let files = git.changed_files(worktree)?;
         if let Some(out) = gated(cmd, slice.gate.as_deref(), worktree)? {
-            return Ok(out);
+            let message = format!("chore(deps): follow {} {old} -> {}", slice.source, pin.latest);
+            let failed = Failed { gate: slice.gate.as_deref().unwrap_or_default(), out };
+            return draft_gated(git, cmd, at, worktree, &branch, &files, &message, failed);
         }
         // the commit is what follow laid: a gate that changed more is refused, not swept in
         let after = git.changed_files(worktree)?;
@@ -570,6 +587,8 @@ fn on_branch(
         }
         // once committed, the branch is kept: pushed or not, it is the bump
         Ok(b @ Bumped::Bumped { .. }) => Ok(b),
+        // a failed gate's draft is the bump a person looks at: kept with it
+        Ok(b @ Bumped::GatedOut { branch: Some(_), .. }) => Ok(b),
         Ok(other) => {
             git.delete_branch(branch)?;
             Ok(other)
@@ -589,7 +608,73 @@ fn gated(
 ) -> Result<Option<Bumped>, crate::PortError> {
     let Some(gate) = gate else { return Ok(None) };
     let (exit, stdout, stderr) = cmd.run(gate, worktree)?;
-    Ok((exit != Some(0)).then(|| Bumped::GatedOut { exit, output: format!("{stdout}{stderr}") }))
+    Ok((exit != Some(0)).then(|| Bumped::GatedOut {
+        exit,
+        output: format!("{stdout}{stderr}"),
+        branch: None,
+        pr: None,
+        pr_error: None,
+    }))
+}
+
+/// A gate that failed: its argv and the gated-out outcome it gave.
+struct Failed<'a> {
+    gate: &'a [String],
+    out: Bumped,
+}
+
+/// A bump whose gate failed, when a pull request is asked for: committed on its branch, pushed, and opened as a
+/// draft carrying the gate's argv, exit and the tail of its output, so the people of the follower see the one
+/// check that failed. Never landed. Without a draft command, nothing is committed.
+#[allow(clippy::too_many_arguments)]
+fn draft_gated(
+    git: &impl crate::GitPort,
+    cmd: &impl crate::CommandPort,
+    at: &BumpAt,
+    worktree: &std::path::Path,
+    branch: &str,
+    files: &[String],
+    message: &str,
+    failed: Failed,
+) -> Result<Bumped, crate::PortError> {
+    let (Some(command), Bumped::GatedOut { exit, output, .. }) = (at.draft, &failed.out) else {
+        return Ok(failed.out);
+    };
+    git.commit_files(worktree, files, message)?;
+    git.push(worktree, branch)?;
+    // the last 40 lines, each cut at 400 characters and indented as a code block: no fence its output could close,
+    // no NUL, and a body well under an argument's size
+    let lines: Vec<&str> = output.lines().collect();
+    let tail = lines[lines.len().saturating_sub(40)..]
+        .iter()
+        .map(|l| format!("    {}", l.replace('\0', "").chars().take(400).collect::<String>()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let code = exit.map_or("a signal".to_string(), |c| c.to_string());
+    let body = format!(
+        "rhizoid bump moved this pin, and its gate failed, so it is not landed: a person looks at it.\n\n\
+         Gate: `{}`\nExit: {code}\n\nThe last lines it printed:\n\n{tail}\n\n\
+         Only the pin and the files committed with it are here; anything else the gate changed is not.\n",
+        failed.gate.join(" ")
+    );
+    let title = format!("{message} (its gate failed)");
+    let argv: Vec<String> = command
+        .iter()
+        .map(|a| a.replace("{branch}", branch).replace("{title}", &title).replace("{body}", &body))
+        .collect();
+    let (mut pr, mut pr_error) = (None, None);
+    match cmd.run(&argv, worktree) {
+        Ok((Some(0), stdout, _)) => pr = Some(stdout.trim().to_string()),
+        Ok((_, stdout, stderr)) => pr_error = Some(format!("{stdout}{stderr}").trim().to_string()),
+        Err(e) => pr_error = Some(e.0),
+    }
+    Ok(Bumped::GatedOut {
+        exit: *exit,
+        output: output.clone(),
+        branch: Some(branch.to_string()),
+        pr,
+        pr_error,
+    })
 }
 
 /// Commit these files with `message`; push and open the pull request when asked. A pull request that fails
@@ -650,6 +735,9 @@ pub struct BumpAt<'a> {
     pub pr: Option<&'a [String]>,
     /// The land command (argv), run in the worktree on the branch once its pull request is open.
     pub land: Option<&'a [String]>,
+    /// The draft pull request command for a bump whose gate failed (argv; `{branch}`, `{title}` and `{body}` in it
+    /// replaced), run once pushed; `None`: a failed gate commits nothing.
+    pub draft: Option<&'a [String]>,
 }
 
 #[cfg(test)]
