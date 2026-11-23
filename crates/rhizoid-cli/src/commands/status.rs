@@ -49,7 +49,10 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
     let graph = Graph::parse(&text).map_err(|e| format!("{}: {e}", ask.graph.display()))?;
     let repos = GitRepos::new(&ask.root, &graph, ask.fetch);
     let mut findings = status(&graph, &repos).map_err(|e| e.to_string())?;
-    findings.extend(integration_status(&graph.integrations, &repos).map_err(|e| e.to_string())?);
+    findings.extend(
+        integration_status(&graph.integrations, &graph.references, &repos)
+            .map_err(|e| e.to_string())?,
+    );
     // a tag origin moved that the clone holds as it was: kept, and said here
     findings.extend(repos.fetch_findings());
     write_report(&mut std::io::stdout().lock(), &render(&findings, ask.json))?;

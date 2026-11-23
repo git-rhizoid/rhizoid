@@ -18,6 +18,7 @@ pub fn run(graph: &Path, version: &str) -> Result<(), String> {
         ("forks", g.forks.len()),
         ("integrations", g.integrations.len()),
         ("pins", g.pin_tables.len()),
+        ("references", g.references.len()),
     ];
     let mut out = format!("graph={}\nrhizoid={version}\nreadable=yes\n", graph.display());
     for (kind, n) in counts {

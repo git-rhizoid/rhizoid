@@ -82,6 +82,28 @@ example. Each check runs only when the edge gives what it needs:
 | `recipe` | - | the newest tag of each assembled list and base: its recipe, read back from its message, names every branch where it is now | `behind`: a branch moved or is gone, so assemble again; `moved-by-hand`: a tag of the `assembled` shape with no recipe (made by hand) |
 | `worktree-tag` | - | each worktree assemble locked has its tag's tree and no change | `moved-by-hand`: a different tree, a change, or a tag that was never made; `behind`: an unlocked worktree in a `rhizoid` home, left at a conflict |
 
+**A reference** (`[[reference]]`, decision 2026-11-23-reference-edge) is a source kept as it was at a build - a vendor
+kernel, busybox, an AOSP piece - under a local tag in a clone, checked by its exact commit. `reference` is `current`
+when the tag peels to `commit`, `behind` when it is missing (printing the fetch that makes it), `moved-by-hand` for any
+other commit. `status --fetch` makes a missing tag from `url` and `ref` (`depth` when given: the clone then becomes partly
+shallow) only when what they give is `commit`, and never moves an existing tag; it fetches over https, ssh, git or a
+local path only, and no submodule. `ref` and `tag` are plain ref names (never a refspec), `commit` a whole lowercase
+sha. It is no pin and no fork: bump, update and send-back never read it; assemble refuses a list whose base or entry
+is a reference tag (of the graph `--graph` names, or `rhizoid.graph.toml` here when there is one); name-scheme accepts the reference tags
+the graph names.
+
+```toml
+[[reference]]
+repo = "acme/linux"                         # the clone it lives in
+name = "android-walleye"
+url = "https://android.googlesource.com/kernel/msm"
+ref = "android-msm-wahoo-4.4"               # the upstream tag or branch at the build
+commit = "0123...89ab"                       # the exact sha: the check
+tag = "reference/android-walleye/BUILD"      # the local tag
+why = "the kernel the phone shipped with"
+depth = 1                                    # optional
+```
+
 **A table of pins** (`[[pins]]`) is covered whole (decision 2026-11-23-every-pin-one-pushed-mover (3)): every key of a
 follower's TOML table is a `[[tool]]` edge's (its `key` at or under the table, in that file, for that follower) or
 named `unpinned` with why it is not pinned (a `line` tool covers no key: name it unpinned); `pin-coverage` is `moved-by-hand` for a key that is neither (a pin no
@@ -105,7 +127,7 @@ taking a lock.
 ## rhizoid assemble
 
 ```
-rhizoid assemble LIST --lists FILE [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
+rhizoid assemble LIST --lists FILE [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--graph FILE] [--fetch] [--json]
 rhizoid assemble --done TAG [--repo DIR] [--force]
 ```
 

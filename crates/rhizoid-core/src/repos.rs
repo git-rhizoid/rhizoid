@@ -51,6 +51,19 @@ pub enum Level {
     Unknown(String),
 }
 
+/// What a reference's local tag is in its clone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefRead {
+    /// The tag is there and peels to this commit.
+    At(String),
+    /// No such tag.
+    Missing,
+    /// It was missing, and `--fetch` made it at the reference's commit.
+    Made,
+    /// It was missing, and `--fetch` could not make it: why.
+    NotMade(String),
+}
+
 /// Read-only access to the repositories of a graph.
 pub trait Repos {
     /// The text of `path` at `rev` in the clone of `repo`; `None` when the revision has no such file.
@@ -83,6 +96,11 @@ pub trait Repos {
         attr: &str,
         paths: &[String],
     ) -> Result<std::collections::BTreeSet<String>, RepoError>;
+
+    /// A reference's local tag in its clone: the commit it peels to, or that it is missing. With `--fetch`, a
+    /// missing tag is made from the reference's url and ref when what they give is its commit; an existing tag is
+    /// never moved.
+    fn reference(&self, r: &crate::graph::Reference) -> Result<RefRead, RepoError>;
 
     /// What reading found about the clones themselves, beside the edges: a tag `origin` moved that the clone
     /// holds as it was (`moved-by-hand`, `tag-origin`). Ask it after the reads; none by default.

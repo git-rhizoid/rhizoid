@@ -21,6 +21,8 @@ pub struct Ask {
     pub fetch: bool,
     pub reproduces: Option<String>,
     pub json: bool,
+    /// The graph file, when given: its reference tags are refused as a base or an entry.
+    pub graph: Option<PathBuf>,
 }
 
 /// The agent worktree home when `AGENT_WORKTREES` is not set: `~/.local/share/agent-worktrees`.
@@ -42,6 +44,16 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
     let clone = git.main_clone().map_err(|e| format!("no clone at {}: {e}", ask.repo.display()))?;
     let home = rhizoid_home(&ask.worktrees, &clone)?;
     let worktree = ask.worktree.as_deref().map(real_as_far_as_it_exists).transpose()?;
+    let references: Vec<String> = match &ask.graph {
+        Some(path) => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("cannot read the graph file {}: {e}", path.display()))?;
+            let graph = rhizoid_core::Graph::parse(&text)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            graph.references.into_iter().map(|r| r.tag).collect()
+        }
+        None => Vec::new(),
+    };
     let report = assemble(
         &git,
         &CoreAsk {
@@ -53,6 +65,7 @@ pub fn run(ask: &Ask) -> Result<bool, String> {
             worktree: worktree.as_deref(),
             fetch: ask.fetch,
             reproduces: ask.reproduces.as_deref(),
+            references: &references,
         },
     )
     .map_err(|e| e.to_string())?;

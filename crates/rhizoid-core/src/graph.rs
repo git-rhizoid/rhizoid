@@ -147,6 +147,87 @@ pub struct Graph {
     /// Tables of pins the graph covers whole: every key an edge, or named unpinned with a why.
     #[serde(default, rename = "pins")]
     pub pin_tables: Vec<PinTable>,
+    /// Sources kept as they were at a build, by an exact commit, under a local tag: read, never moved or built on.
+    #[serde(default, rename = "reference")]
+    pub references: Vec<Reference>,
+}
+
+/// A source kept as it was at a build (decision 2026-11-23-reference-edge): a vendor kernel, busybox, an AOSP piece -
+/// any repository, any source. Its local tag must peel to `commit`; `status --fetch` makes a missing tag from `url` and
+/// `ref`, and never moves one. No pin and no fork: bump, update and send-back never read it, and assemble refuses it
+/// as a base or an entry.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reference {
+    /// The clone it lives in (a `[clones]` key, or `owner/repo`).
+    pub repo: RepoName,
+    /// What it is, in a word or two (`android-walleye`).
+    pub name: String,
+    /// Where it comes from.
+    pub url: String,
+    /// The upstream tag or branch at the build.
+    #[serde(rename = "ref")]
+    pub reference: String,
+    /// The exact commit: the check.
+    pub commit: String,
+    /// The local tag that holds it (`reference/android-walleye/BUILD`).
+    pub tag: String,
+    /// Why it is kept.
+    pub why: String,
+    /// Fetch only this many commits of history.
+    #[serde(default)]
+    pub depth: Option<u32>,
+}
+
+impl Reference {
+    /// The commands that make its missing tag in its clone, each value quoted for a shell: the fetch, then the tag
+    /// made at the commit and only when absent (which fails when the fetch did not bring that commit).
+    pub fn fetch_command(&self) -> String {
+        let q = |s: &str| format!("'{}'", s.replace('\'', r"'\''"));
+        let depth = self.depth.map_or(String::new(), |d| format!(" --depth {d}"));
+        format!(
+            "git fetch --no-tags --no-recurse-submodules{depth} -- {} {} && git update-ref {} {} {}",
+            q(&self.url),
+            q(&self.reference),
+            q(&format!("refs/tags/{}", self.tag)),
+            self.commit,
+            "0".repeat(self.commit.len())
+        )
+    }
+
+    /// Why the graph cannot hold it, if it cannot.
+    fn invalid(&self) -> Option<String> {
+        // lowercase, as git prints it: the check compares it with what git says
+        let hex = |s: &str| {
+            (s.len() == 40 || s.len() == 64)
+                && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        let plain = |s: &str| {
+            !s.trim().is_empty() && !s.starts_with('-') && !s.contains(char::is_whitespace)
+        };
+        if !hex(&self.commit) {
+            return Some(format!("commit {:?} is not a whole sha in lowercase hex", self.commit));
+        }
+        for (field, value) in
+            [("url", &self.url), ("ref", &self.reference), ("tag", &self.tag), ("name", &self.name)]
+        {
+            if !plain(value) {
+                return Some(format!(
+                    "{field} {value:?} is empty, has a space or starts with a dash"
+                ));
+            }
+        }
+        // a ref that is a refspec (`a:b`, `+a`) would write a ref of the clone itself; a tag must be a ref name
+        for (field, value) in [("ref", &self.reference), ("tag", &self.tag), ("name", &self.name)] {
+            if !ref_name(value) {
+                return Some(format!("{field} {value:?} is not a plain ref name (no : + * ? [ \\ ^ ~ .. @{{ or .lock)"));
+            }
+        }
+        if self.why.trim().is_empty() {
+            return Some("says no why".to_string());
+        }
+        (self.depth == Some(0)).then(|| "depth 0 is no history: leave it out for all".to_string())
+    }
 }
 
 /// A follower's table of pins, covered whole (decision 2026-11-23-every-pin-one-pushed-mover (3)): each key is a
@@ -223,6 +304,18 @@ impl Graph {
                 .map_err(|e| format!("pins {} {}: table: {e}", p.follower, p.file))?;
             if let Some((key, _)) = p.unpinned.iter().find(|(_, why)| why.trim().is_empty()) {
                 return Err(format!("pins {} {}: unpinned {key} says no why", p.follower, p.file));
+            }
+        }
+        let mut tags = std::collections::BTreeSet::new();
+        for r in &graph.references {
+            if let Some(why) = r.invalid() {
+                return Err(format!("reference {}: {why}", r.name));
+            }
+            if !tags.insert((r.repo.clone(), r.tag.clone())) {
+                return Err(format!(
+                    "reference {}: the tag {} in {} is another reference's too",
+                    r.name, r.tag, r.repo
+                ));
             }
         }
         if graph.bump.land.as_ref().is_some_and(|l| l.is_empty()) {
@@ -545,5 +638,54 @@ impl std::ops::Deref for Marker {
 impl fmt::Display for Marker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+/// Whether `s` is a plain ref name, as git check-ref-format allows one and nothing a refspec or a revision reads
+/// differently: no `:`, `+`, `*`, `?`, `[`, `\`, `^`, `~`, control character, `..`, `@{`, `//`, and no part that
+/// starts with `.` or ends with `.lock`, and no `/` or `.` at the end.
+pub fn ref_name(s: &str) -> bool {
+    !s.is_empty()
+        && !s.chars().any(|c| ":+*?[\\^~".contains(c) || c.is_control() || c == ' ')
+        && !s.contains("..")
+        && !s.contains("@{")
+        && !s.contains("//")
+        && !s.ends_with('/')
+        && !s.ends_with('.')
+        && s != "@"
+        && s.split('/').all(|p| !p.starts_with('.') && !p.ends_with(".lock"))
+}
+
+#[cfg(test)]
+mod ref_name_tests {
+    use super::ref_name;
+
+    #[test]
+    fn only_a_plain_ref_name_passes() {
+        for ok in [
+            "build-1",
+            "refs/tags/v1",
+            "android-msm-wahoo-4.4",
+            "reference/android-walleye/QQ3A.200805",
+        ] {
+            assert!(ref_name(ok), "{ok}");
+        }
+        for bad in [
+            "v1:refs/tags/x",
+            "+v1",
+            "a*",
+            "x~1",
+            "x^{}",
+            "a..b",
+            "a@{1}",
+            "x.lock",
+            ".hidden",
+            "a//b",
+            "a/",
+            "@",
+            "a?",
+        ] {
+            assert!(!ref_name(bad), "{bad}");
+        }
     }
 }

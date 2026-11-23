@@ -2,9 +2,9 @@
 //! (the `auth-via-gh` decision). Everything it does is a read; `--fetch` only brings a clone's refs up to date.
 //! Git runs with `LC_ALL=C`, so what it says on stderr is what this reads it as.
 
-use rhizoid_core::graph::{Remote, RepoName};
+use rhizoid_core::graph::{Reference, Remote, RepoName};
 use rhizoid_core::{
-    Check, Finding, Graph, IntegrationReads, Level, RepoError, Repos, Verdict, Worktree,
+    Check, Finding, Graph, IntegrationReads, Level, RefRead, RepoError, Repos, Verdict, Worktree,
 };
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -231,6 +231,63 @@ impl Repos for GitRepos<'_> {
             _ => return Err(RepoError::Failed(format!("{repo}: {}", failure(&args, &out)))),
         }
         Ok(grep_hits(&String::from_utf8_lossy(&out.stdout), rev))
+    }
+
+    fn reference(&self, r: &Reference) -> Result<RefRead, RepoError> {
+        let dir = self.clone_dir(&r.repo)?;
+        let verify = |rev: &str| -> Result<Option<String>, RepoError> {
+            let out = git(&dir, &["rev-parse", "-q", "--verify", rev])?;
+            Ok(out
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+        };
+        let tag = format!("refs/tags/{}", r.tag);
+        if let Some(object) = verify(&tag)? {
+            // a tag that is there but holds no commit is not missing: it holds something else
+            return Ok(RefRead::At(
+                verify(&format!("{tag}^{{commit}}"))?.unwrap_or(format!("{object} (no commit)")),
+            ));
+        }
+        if !self.fetch {
+            return Ok(RefRead::Missing);
+        }
+        // the ref into a ref of rhizoid's own, never FETCH_HEAD (another fetch may write it) and never the tag: the
+        // tag is made only at the recorded commit, and only when absent
+        let private = format!("refs/rhizoid/reference/{}", r.tag);
+        let refspec = format!("+{}:{private}", r.reference);
+        let mut args = vec!["fetch", "--no-tags", "--no-recurse-submodules"];
+        let depth = r.depth.map(|d| d.to_string());
+        if let Some(d) = &depth {
+            args.extend(["--depth", d.as_str()]);
+        }
+        args.extend(["--", r.url.as_str(), refspec.as_str()]);
+        let out = plain(
+            Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(&args)
+                // the transports a reference may come by, decided here rather than by a person's git config
+                .env("GIT_ALLOW_PROTOCOL", "https:ssh:git:file"),
+        )?;
+        if !out.status.success() {
+            return Ok(RefRead::NotMade(failure(&args, &out)));
+        }
+        let fetched = verify(&format!("{private}^{{commit}}"))?.unwrap_or_default();
+        let _ = git(&dir, &["update-ref", "-d", &private]);
+        if fetched != r.commit {
+            return Ok(RefRead::NotMade(format!(
+                "{} {} is {} now, not the recorded {}",
+                r.url, r.reference, fetched, r.commit
+            )));
+        }
+        let zero = "0".repeat(r.commit.len());
+        let make = ["update-ref", tag.as_str(), r.commit.as_str(), zero.as_str()];
+        let out = git(&dir, &make)?;
+        if !out.status.success() {
+            return Ok(RefRead::NotMade(failure(&make, &out)));
+        }
+        Ok(RefRead::Made)
     }
 
     fn marked(
