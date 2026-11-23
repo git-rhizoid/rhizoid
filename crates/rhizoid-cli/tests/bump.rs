@@ -493,3 +493,37 @@ fn the_json_report_names_each_pins_mover_and_an_empty_mover_is_refused() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(String::from_utf8_lossy(&out.stderr).contains("moved_by"), "{out:?}");
 }
+
+#[test]
+fn a_pin_whose_tag_name_is_written_twice_is_named_and_refused() {
+    let w = world(PASSING_GATE);
+    std::fs::create_dir_all(w.lab.join(".github")).unwrap();
+    std::fs::write(w.lab.join(".github/ci.yml"), "steps:\n  - uses: lpoco-attended-v0.1.0\n")
+        .unwrap();
+    git(&w.lab, &["add", "-A"]);
+    git(&w.lab, &["commit", "-q", "-m", "a second copy"]);
+    git(&w.lab, &["push", "-q", "origin", "main"]);
+    git(&w.lab, &["fetch", "-q"]);
+
+    let out = w.bump(&["now"]);
+    assert_eq!(value(&out, "pin.2.name").as_deref(), Some("lpoco-attended"));
+    assert_eq!(value(&out, "pin.2.copies").as_deref(), Some(".github/ci.yml:2"));
+    assert_eq!(value(&out, "pin.2.state").as_deref(), Some("refused"), "{out:?}");
+    assert!(value(&out, "pin.2.why").unwrap().contains(".github/ci.yml:2"));
+    assert_eq!(value(&out, "pin.1.state").as_deref(), Some("bumped"), "the other pins still move");
+    assert_eq!(git(&w.lab, &["branch", "--list", "rhizoid/bump/lpoco-attended*"]), "");
+    assert_eq!(out.status.code(), Some(1));
+
+    let status = Command::new(bin())
+        .args(["status", "--graph"])
+        .arg(&w.graph)
+        .arg("--root")
+        .arg(&w.root)
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        report.lines().any(|l| l.starts_with("moved-by-hand acme/lab <- acme/tools  pin-copies: lpoco-attended-v0.1.0 is also written in .github/ci.yml:2: bump refuses")),
+        "{report}"
+    );
+}

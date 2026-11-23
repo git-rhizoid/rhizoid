@@ -249,7 +249,10 @@ Every pin of a graph in one place - each pin where its own reader reads it, list
 newest release of its source, and `pin.N.moved_by`: the one job that moves it, named on its edge (`moved_by` on a `[[tool]]` or
 `[[slice]]`, default `rhizoid-bump`; decision 2026-11-23-every-pin-one-pushed-mover). Without `now` it lists them and
 changes nothing (it ends 1 when one is behind). With `now`, it moves only the pins naming `rhizoid-bump` - another
-job's pin is listed and left, and its exit says only how its own pins stand. Each tool pin of its own that is behind is bumped in its follower's clone: a branch `rhizoid/bump/TOOL-VERSION` from the
+job's pin is listed and left, and its exit says only how its own pins stand. A tool pin whose tag name (its prefix and the release it pins) is
+also written in the follower outside its pin file and its `also` files is `refused`, each copy named
+(`pin.N.copies`, `FILE:LINE`): bump never moves one copy of several, and status says the same as `pin-copies`
+(`moved-by-hand`; `current` when the pin file holds the only copy). Each tool pin of its own that is behind is bumped in its follower's clone: a branch `rhizoid/bump/TOOL-VERSION` from the
 graph's revision, in a fresh worktree; only the pinned value edited, the rest of the file as it was, and the edit read
 back before it is committed (a value that appears twice, or does not read back, is `refused`, left to a hand); the
 tool's `gate`, when it has one, passed before the commit (`gated-out` commits nothing); `--push` pushes the branch to
