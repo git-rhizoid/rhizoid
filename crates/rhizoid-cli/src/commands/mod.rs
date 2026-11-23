@@ -3,6 +3,7 @@
 
 pub mod assemble;
 pub mod bump;
+pub mod check;
 pub mod cutting;
 pub mod follow;
 pub mod send_back;

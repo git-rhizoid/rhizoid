@@ -20,7 +20,7 @@ use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAN_DATE: &str = "2026-11-23";
-const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), merge a named list of branches onto a base into a tag (rhizoid assemble), draft the next series version of a branch for its upstream (rhizoid send-back), keep every pin in one place (rhizoid bump), and lay a slice as idealkb's follow.sh does (rhizoid follow)";
+const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status) and whether this version can read it (rhizoid check), merge a named list of branches onto a base into a tag (rhizoid assemble), draft the next series version of a branch for its upstream (rhizoid send-back), keep every pin in one place (rhizoid bump), and lay a slice as idealkb's follow.sh does (rhizoid follow)";
 
 const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command { name: "add", summary: "Fork a repository on GitHub and take it as a cutting (plan; now does it)" },
@@ -31,6 +31,10 @@ const COMMANDS: &[generate::Command<'static>] = &[
     generate::Command {
         name: "status",
         summary: "Every edge of a repository graph: current, behind or moved by hand, and how",
+    },
+    generate::Command {
+        name: "check",
+        summary: "Whether this rhizoid can read the graph: every edge parsed and checked, no clones, no network",
     },
     generate::Command {
         name: "assemble",
@@ -91,6 +95,7 @@ enum Request {
     Version,
     Cutting(commands::cutting::Ask),
     Status(Ask),
+    Check { graph: PathBuf },
     Assemble(commands::assemble::Ask),
     AssembleDone { tag: String, repo: PathBuf, force: bool },
     SendBack(commands::send_back::Ask),
@@ -167,6 +172,12 @@ fn request(r: &Resolution) -> Result<Request, String> {
                 json: Contract::JSON.get_from(r).unwrap_or(false),
             })
         }
+        Command::Check => Request::Check {
+            graph: match Contract::GRAPH.get_from(r) {
+                Some(g) => g.into(),
+                None => current_dir()?.join(commands::status::GRAPH_FILE),
+            },
+        },
         Command::Assemble if Contract::DONE.get_from(r).is_some_and(|t| !t.is_empty()) => {
             Request::AssembleDone {
                 tag: Contract::DONE.get_from(r).unwrap_or_default(),
@@ -306,6 +317,13 @@ fn main() -> ExitCode {
         Ok(Request::Status(ask)) => match commands::status::run(&ask) {
             Ok(false) => ExitCode::SUCCESS,
             Ok(true) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("rhizoid: {e}");
+                ExitCode::from(2)
+            }
+        },
+        Ok(Request::Check { graph }) => match commands::check::run(&graph, VERSION) {
+            Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("rhizoid: {e}");
                 ExitCode::from(2)
