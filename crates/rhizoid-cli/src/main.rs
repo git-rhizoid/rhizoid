@@ -7,15 +7,14 @@
 
 mod cli;
 mod commands;
+mod gh_cli;
 mod git_cli;
 mod git_repos;
-mod manifest_io;
 
 use argenv_resolve::generate::{self, Program, Shell};
 use argenv_resolve::{lint, InputResolveExt, LintPolicy, Resolution, Severity};
 use cli::{Command, Contract};
 use commands::status::Ask;
-use commands::unbuilt::Verb;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -24,12 +23,11 @@ const MAN_DATE: &str = "2026-11-23";
 const ABOUT: &str = "Fork, own and sync git dependencies, report every edge of a repository graph (rhizoid status), merge a named list of branches onto a base into a tag (rhizoid assemble), draft the next series version of a branch for its upstream (rhizoid send-back), keep every pin in one place (rhizoid bump), and lay a slice as idealkb's follow.sh does (rhizoid follow)";
 
 const COMMANDS: &[generate::Command<'static>] = &[
-    generate::Command { name: "init", summary: "Write a fresh rhizoid.toml" },
-    generate::Command { name: "add", summary: "Fork a new module into the configured org" },
-    generate::Command { name: "import", summary: "Adopt an existing fork" },
-    generate::Command { name: "update", summary: "Pull upstream into a module's tracking branch" },
-    generate::Command { name: "refresh", summary: "Reconcile the manifest with what is observed" },
-    generate::Command { name: "remove", summary: "Drop a module from the manifest" },
+    generate::Command { name: "add", summary: "Fork a repository on GitHub and take it as a cutting (plan; now does it)" },
+    generate::Command { name: "import", summary: "Take an existing fork as a cutting (plan; now does it)" },
+    generate::Command { name: "update", summary: "Fast-forward a cutting's tracking branch and merge it into its patch branch (plan; now does it)" },
+    generate::Command { name: "refresh", summary: "Read each cutting of the graph against GitHub; change nothing" },
+    generate::Command { name: "remove", summary: "Take a cutting out of the graph; the fork stays (plan; now does it)" },
     generate::Command {
         name: "status",
         summary: "Every edge of a repository graph: current, behind or moved by hand, and how",
@@ -91,9 +89,7 @@ fn resolve() -> Resolution {
 enum Request {
     Help,
     Version,
-    Init { dir: PathBuf, org: Option<String>, force: bool },
-    Remove { dir: PathBuf, module: String },
-    Unbuilt { verb: Verb, target: Option<String> },
+    Cutting(commands::cutting::Ask),
     Status(Ask),
     Assemble(commands::assemble::Ask),
     AssembleDone { tag: String, repo: PathBuf, force: bool },
@@ -108,11 +104,6 @@ fn current_dir() -> Result<PathBuf, String> {
     std::env::current_dir().map_err(|e| format!("cannot read the current folder: {e}"))
 }
 
-/// The target a command needs, or the usage error that says which.
-fn required(target: Option<String>, what: &str) -> Result<String, String> {
-    target.ok_or_else(|| format!("missing <{what}>"))
-}
-
 fn request(r: &Resolution) -> Result<Request, String> {
     if Contract::HELP.get_from(r).unwrap_or(false) {
         return Ok(Request::Help);
@@ -125,22 +116,41 @@ fn request(r: &Resolution) -> Result<Request, String> {
     };
     let target = Contract::TARGET.get_from(r);
     Ok(match command {
-        Command::Init => Request::Init {
-            dir: current_dir()?,
-            org: Contract::ORG.get_from(r).filter(|s| !s.is_empty()),
-            force: Contract::FORCE.get_from(r).unwrap_or(false),
-        },
-        Command::Remove => {
-            Request::Remove { dir: current_dir()?, module: required(target, "module")? }
+        Command::Add | Command::Import | Command::Update | Command::Refresh | Command::Remove => {
+            use commands::cutting::Verb;
+            let verb = match command {
+                Command::Add => Verb::Add,
+                Command::Import => Verb::Import,
+                Command::Update => Verb::Update,
+                Command::Refresh => Verb::Refresh,
+                _ => Verb::Remove,
+            };
+            Request::Cutting(commands::cutting::Ask {
+                verb,
+                target,
+                now: Contract::NOW.get_from(r).as_deref() == Some("now"),
+                graph: match Contract::GRAPH.get_from(r) {
+                    Some(g) => g.into(),
+                    None => current_dir()?.join(commands::status::GRAPH_FILE),
+                },
+                root: match Contract::ROOT.get_from(r).filter(|s| !s.is_empty()) {
+                    Some(root) => root.into(),
+                    None => commands::status::default_root(Contract::HOME.get_from(r).as_deref())?,
+                },
+                worktrees: match Contract::AGENT_WORKTREES.get_from(r).filter(|s| !s.is_empty()) {
+                    Some(d) => d.into(),
+                    None => commands::assemble::default_worktrees(
+                        Contract::HOME.get_from(r).as_deref(),
+                    )?,
+                },
+                org: Contract::ORG.get_from(r).filter(|s| !s.is_empty()),
+                tracking: Contract::TRACKED_REF.get_from(r).filter(|s| !s.is_empty()),
+                upstream: Contract::UPSTREAM.get_from(r).filter(|s| !s.is_empty()),
+                upstream_branch: Contract::UPSTREAM_BRANCH.get_from(r).filter(|s| !s.is_empty()),
+                patches: Contract::PATCHES.get_from(r).filter(|s| !s.is_empty()),
+                json: Contract::JSON.get_from(r).unwrap_or(false),
+            })
         }
-        Command::Add => {
-            Request::Unbuilt { verb: Verb::Add, target: Some(required(target, "source")?) }
-        }
-        Command::Import => {
-            Request::Unbuilt { verb: Verb::Import, target: Some(required(target, "fork")?) }
-        }
-        Command::Update => Request::Unbuilt { verb: Verb::Update, target },
-        Command::Refresh => Request::Unbuilt { verb: Verb::Refresh, target },
         Command::Status => {
             let root = match Contract::ROOT.get_from(r).filter(|s| !s.is_empty()) {
                 Some(root) => root.into(),
@@ -284,11 +294,14 @@ fn main() -> ExitCode {
             println!("rhizoid {VERSION}");
             ExitCode::SUCCESS
         }
-        Ok(Request::Init { dir, org, force }) => done(commands::init::run(&dir, org, force)),
-        Ok(Request::Remove { dir, module }) => done(commands::remove::run(&dir, &module)),
-        Ok(Request::Unbuilt { verb, target }) => {
-            done(commands::unbuilt::run(verb, target.as_deref()))
-        }
+        Ok(Request::Cutting(ask)) => match commands::cutting::run(&ask) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("rhizoid: {e}");
+                ExitCode::from(2)
+            }
+        },
         Ok(Request::Status(ask)) => match commands::status::run(&ask) {
             Ok(false) => ExitCode::SUCCESS,
             Ok(true) => ExitCode::FAILURE,

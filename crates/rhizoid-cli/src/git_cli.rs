@@ -251,6 +251,43 @@ impl GitPort for GitCli {
         Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
     }
 
+    fn fetch_ref(&self, remote: &str, branch: &str) -> Result<String, PortError> {
+        if remote.starts_with('-') {
+            return Err(PortError(format!("{remote}: not a remote")));
+        }
+        self.ok(&["fetch", "-q", "--no-tags", remote, &format!("refs/heads/{branch}")])?;
+        Ok(self.ok(&["rev-parse", "FETCH_HEAD"])?.trim().to_string())
+    }
+
+    fn push_ref(&self, commit: &str, remote: &str, branch: &str) -> Result<(), PortError> {
+        self.ok(&["push", "-q", remote, &format!("{commit}:refs/heads/{branch}")]).map(drop)
+    }
+
+    fn remotes(&self) -> Result<Vec<(String, String)>, PortError> {
+        // the URLs as configured: `git remote -v` would show them after insteadOf rewrites
+        let out = self.run(&self.repo, &["config", "--get-regexp", r"^remote\..*\.url$"])?;
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let (key, url) = l.split_once(' ')?;
+                let name = key.strip_prefix("remote.")?.strip_suffix(".url")?;
+                Some((name.to_string(), url.trim().to_string()))
+            })
+            .collect())
+    }
+
+    fn is_ancestor(&self, a: &str, b: &str) -> Result<bool, PortError> {
+        let out = self.run(&self.repo, &["merge-base", "--is-ancestor", a, b])?;
+        match out.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(PortError(format!(
+                "git merge-base --is-ancestor {a} {b}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))),
+        }
+    }
+
     fn delete_branch(&self, name: &str) -> Result<(), PortError> {
         self.ok(&["branch", "-q", "-D", name]).map(drop)
     }

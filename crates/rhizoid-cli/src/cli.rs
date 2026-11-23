@@ -2,12 +2,9 @@
 //! variables it reads. The parser, `--help`, the manual page and the completions all come from this.
 //!
 //! ```text
-//!   rhizoid init [--org ORG] [--force]                 write a fresh rhizoid.toml
-//!   rhizoid add SOURCE [--org ORG] [--as NAME] [--tracked-ref REF]
-//!   rhizoid import FORK [--as NAME] [--tracked-ref REF]
-//!   rhizoid update [MODULE]
-//!   rhizoid refresh [MODULE]
-//!   rhizoid remove MODULE
+//!   rhizoid add SOURCE [now] [--org ORG] [--tracked-ref REF] [--patches BRANCH|integration] [--graph FILE] [--root DIR]
+//!   rhizoid import FORK [now] [--upstream REMOTE] [--upstream-branch B] [--tracked-ref REF] [--patches ...]
+//!   rhizoid update MODULE [now]       rhizoid refresh       rhizoid remove MODULE [now]     (cuttings, in the graph)
 //!   rhizoid status [--graph FILE] [--root DIR] [--fetch] [--json]   every edge of a repository graph, read-only
 //!   rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
 //!   rhizoid assemble --done TAG [--repo DIR] [--force]  end a tag's worktree
@@ -22,7 +19,6 @@ use argenv_resolve::*;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Command {
-    Init,
     Add,
     Import,
     Update,
@@ -40,7 +36,6 @@ pub enum Command {
 
 impl Command {
     pub const TOKENS: &'static [&'static str] = &[
-        "init",
         "add",
         "import",
         "update",
@@ -62,7 +57,6 @@ impl Command {
 impl FromRaw for Command {
     fn from_raw(s: &str) -> Option<Command> {
         Some(match s.trim() {
-            "init" => Command::Init,
             "add" => Command::Add,
             "import" => Command::Import,
             "update" => Command::Update,
@@ -112,10 +106,10 @@ contract! {
     ORG: String, Command = Input {
         key: "org",
         ty: Type::String,
-        subcommands: &[Command::Init, Command::Add],
+        subcommands: &[Command::Add],
         env: Some(Env::new("RHIZOID_ORG")),
         arg: Some(Arg { value_name: "ORG", ..Arg::long("org") }),
-        summary: "The GitHub org or user new forks are created under (init: by default; add: for this module only).",
+        summary: "The GitHub org or user a new cutting is forked into (default: the graph's fork_org).",
         ..Input::EMPTY
     };
 
@@ -123,18 +117,9 @@ contract! {
         key: "force",
         ty: Type::Bool,
         default: Some(false),
-        subcommands: &[Command::Init, Command::Assemble],
+        subcommands: &[Command::Assemble],
         arg: Some(Arg::long("force")),
-        summary: "init: overwrite an existing rhizoid.toml; assemble --done: remove the worktree even with changes in it.",
-        ..Input::EMPTY
-    };
-
-    AS_NAME: String, Command = Input {
-        key: "as_name",
-        ty: Type::String,
-        subcommands: &[Command::Add, Command::Import],
-        arg: Some(Arg { value_name: "NAME", ..Arg::long("as") }),
-        summary: "The module's name in the manifest (the repository's own name when none is given).",
+        summary: "assemble --done: remove the worktree even with changes in it.",
         ..Input::EMPTY
     };
 
@@ -143,14 +128,14 @@ contract! {
         ty: Type::String,
         subcommands: &[Command::Add, Command::Import],
         arg: Some(Arg { value_name: "REF", ..Arg::long("tracked-ref") }),
-        summary: "The branch or tag on the fork that tracks upstream.",
+        summary: "The cutting's tracking branch (default: the graph's, or the fork's default branch).",
         ..Input::EMPTY
     };
 
     GRAPH: String, Command = Input {
         key: "graph",
         ty: Type::String,
-        subcommands: &[Command::Status, Command::Bump],
+        subcommands: &[Command::Status, Command::Bump, Command::Add, Command::Import, Command::Update, Command::Refresh, Command::Remove],
         env: Some(Env::new("RHIZOID_GRAPH")),
         arg: Some(Arg { value_name: "FILE", ..Arg::long("graph") }),
         summary: "The graph file: the edges to read (rhizoid.graph.toml here when none is given).",
@@ -160,7 +145,7 @@ contract! {
     ROOT: String, Command = Input {
         key: "root",
         ty: Type::String,
-        subcommands: &[Command::Status, Command::Bump],
+        subcommands: &[Command::Status, Command::Bump, Command::Add, Command::Import, Command::Update, Command::Refresh, Command::Remove],
         env: Some(Env::new("RHIZOID_ROOT")),
         arg: Some(Arg { value_name: "DIR", ..Arg::long("root") }),
         summary: "The folder the clones are under (~/Projects when none is given).",
@@ -189,7 +174,7 @@ contract! {
         key: "json",
         ty: Type::Bool,
         default: Some(false),
-        subcommands: &[Command::Status, Command::Assemble, Command::SendBack, Command::Bump],
+        subcommands: &[Command::Status, Command::Assemble, Command::SendBack, Command::Bump, Command::Add, Command::Import, Command::Update, Command::Refresh, Command::Remove],
         arg: Some(Arg::long("json")),
         summary: "Print the report as JSON (status: the findings; assemble: the recipe and the outcome; send-back: the series).",
         ..Input::EMPTY
@@ -381,6 +366,43 @@ contract! {
         ..Input::EMPTY
     };
 
+    NOW: String, Command = Input {
+        key: "now",
+        ty: Type::Enum,
+        allowed: &["now"],
+        subcommands: &[Command::Add, Command::Import, Command::Update, Command::Remove],
+        arg: Some(Arg { value_name: "now", ..Arg::positional(1) }),
+        summary: "Do it now: without it a cutting verb prints its plan and changes nothing.",
+        ..Input::EMPTY
+    };
+
+    PATCHES: String, Command = Input {
+        key: "patches",
+        ty: Type::String,
+        subcommands: &[Command::Add, Command::Import],
+        arg: Some(Arg { value_name: "BRANCH|integration", ..Arg::long("patches") }),
+        summary: "Where the cutting's changes live: one branch (rhizoid/patch by default) or integration (the topics its [[integration]] edge assembles).",
+        ..Input::EMPTY
+    };
+
+    UPSTREAM: String, Command = Input {
+        key: "upstream",
+        ty: Type::String,
+        subcommands: &[Command::Import],
+        arg: Some(Arg { value_name: "REMOTE", ..Arg::long("upstream") }),
+        summary: "The cutting's upstream (owner/repo or a URL), when GitHub's parent is not it.",
+        ..Input::EMPTY
+    };
+
+    UPSTREAM_BRANCH: String, Command = Input {
+        key: "upstream_branch",
+        ty: Type::String,
+        subcommands: &[Command::Add, Command::Import],
+        arg: Some(Arg { value_name: "BRANCH", ..Arg::long("upstream-branch") }),
+        summary: "The upstream's branch the tracking branch follows (default: the tracking branch's name).",
+        ..Input::EMPTY
+    };
+
     AGENT_WORKTREES: String = Input {
         key: "agent_worktrees",
         ty: Type::String,
@@ -469,24 +491,25 @@ mod tests {
 
     #[test]
     fn a_flag_beats_the_environment() {
-        let r = resolve(&["init", "--org", "from-arg"], &[("RHIZOID_ORG", "from-env")]);
+        let r = resolve(&["add", "a/b", "--org", "from-arg"], &[("RHIZOID_ORG", "from-env")]);
         assert_eq!(Contract::ORG.get_from(&r).as_deref(), Some("from-arg"));
-        let r = resolve(&["init"], &[("RHIZOID_ORG", "from-env")]);
+        let r = resolve(&["add", "a/b"], &[("RHIZOID_ORG", "from-env")]);
         assert_eq!(Contract::ORG.get_from(&r).as_deref(), Some("from-env"));
     }
 
     #[test]
     fn the_target_comes_after_the_command_and_before_or_among_its_flags() {
-        let r = resolve(&["add", "octocat/hello", "--as", "renamed"], &[]);
+        let r = resolve(&["add", "octocat/hello", "--tracked-ref", "main"], &[]);
         assert_eq!(Contract::TARGET.get_from(&r).as_deref(), Some("octocat/hello"));
-        assert_eq!(Contract::AS_NAME.get_from(&r).as_deref(), Some("renamed"));
-        let r = resolve(&["add", "--as", "renamed", "octocat/hello"], &[]);
+        assert_eq!(Contract::TRACKED_REF.get_from(&r).as_deref(), Some("main"));
+        let r = resolve(&["add", "--tracked-ref", "main", "octocat/hello", "now"], &[]);
+        assert_eq!(Contract::NOW.get_from(&r).as_deref(), Some("now"));
         assert_eq!(Contract::TARGET.get_from(&r).as_deref(), Some("octocat/hello"));
     }
 
     #[test]
     fn a_flag_given_to_the_wrong_command_is_a_finding() {
-        let r = resolve(&["init", "--json"], &[]);
+        let r = resolve(&["follow", "--json"], &[]);
         let findings = lint(&Contract::records(), &r);
         assert!(!findings.is_empty(), "--json belongs to status");
     }

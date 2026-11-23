@@ -6,11 +6,11 @@ pinned, patchable without waiting on an upstream PR, and able to send clean patc
 when you want to. See [`git-rhizoid/git-rhizoid.github.io`](https://github.com/git-rhizoid/git-rhizoid.github.io)
 for the design log and current status.
 
-**Status: `rhizoid status`, `assemble`, `send-back`, `bump` and `follow` work** - status is the first step of the follow tool for every edge a
+**Status: `rhizoid status`, `assemble`, `send-back`, `bump`, `follow` and the cutting verbs work** - status is the first step of the follow tool for every edge a
 repository has (a slice, a tool pin, a fork, an integration); assemble merges a named list of branches onto a base into
 a tag, in any repository; send-back drafts the next series version of a branch for its upstream; bump lists every pin in one place and bumps
-tool pins on branches; follow lays a slice as idealkb's follow.sh does; `add`, `import`, `update` and
-`refresh` wait for the GitHub adapter. The rest of the repo is
+tool pins on branches; follow lays a slice as idealkb's follow.sh does; `add`, `import`, `update`, `refresh` and `remove`
+take and keep cuttings, recorded in the graph. The rest of the repo is
 the devenv and CI/release scaffolding (from [rustnix](https://github.com/grenudi/rustnix)).
 
 ## rhizoid status
@@ -30,9 +30,9 @@ It reads the clones as they are, and asks remotes only for their refs (`git ls-r
 upstream, an integration's `origin` and `releases`) (`--fetch` first fetches each clone's branches from `origin`, pruning the ones `origin`
 no longer has, then its tags without pruning, so a tag made locally stays), and pin files as TOML, not as lines. Where it answers differently from the shell on purpose: a file named in `own` that neither side has is
 `behind` (a typo), a pin that names a release its source never made is `behind`, a fork ahead of its upstream is
-`moved-by-hand` and not behind, a pin file that is not what it should be stops the report. The old `status`, which
-listed the modules of `rhizoid.toml` and said drift was unknown, is gone: a cutting returns as an edge of the graph
-when cuttings are built (step 4 of the order).
+`moved-by-hand` and not behind, a pin file that is not what it should be stops the report. A cutting is a `[[fork]]` edge
+of the graph (see the cutting verbs below); rhizoid.toml, its manifest and `init` are gone (decision
+2026-11-23-cuttings-live-in-the-graph).
 
 **An integration edge** (`[[integration]]`) reads one repository whose branches `rhizoid assemble` merges into
 tags, against what the graph gives it - every name is the graph's, none is rhizoid's:
@@ -302,6 +302,54 @@ ideal-knowledge-base) it lays each scenario with `follow.sh` and with `rhizoid f
 how each ended and the trees they left, byte for byte, then runs idealkb's own `bin/test-follow.sh` with its
 `follow.sh` handing over to rhizoid. `check-one-owner.sh`, `slice-changed.sh` and `followers-answer.sh` stay
 idealkb's; the last calls `follow.sh`, so it keeps working whichever lays the files.
+
+## Cuttings: add, import, update, refresh, remove
+
+```
+rhizoid add SOURCE [now] [--org ORG] [--tracked-ref REF] [--upstream-branch B] [--patches BRANCH|integration]
+rhizoid import FORK [now] [--upstream REMOTE] [--upstream-branch B] [--tracked-ref REF] [--patches BRANCH|integration]
+rhizoid update MODULE [now]
+rhizoid refresh
+rhizoid remove MODULE [now]
+```
+
+A cutting is a dependency taken as an owned fork. Its **tracking** branch is its upstream's, moved only as a
+fast-forward and never committed to by hand. Its changes live on its **patch side**, which is either one branch
+(`rhizoid/patch` unless named), merged from tracking and carrying `.rhizoid/module.toml`, or `integration`: the topic
+branches the repository's `[[integration]]` edge assembles, with no patch branch at all (a kernel's way).
+
+**The graph is the record.** A cutting is a `[[fork]]` edge that also says `patches` and `added` (`add` or `import`);
+the graph may name `fork_org`, where `add` forks to. Every graph of v0.2.x still reads; its `[[fork]]` edges are forks,
+not yet cuttings.
+
+```toml
+[[fork]]
+fork = "grenudi/linux"
+upstream = "sm7150-mainline/linux"
+branch = "master"                 # tracking
+upstream_branch = "master"
+patches = "integration"           # or a branch: "rhizoid/patch"
+added = "import"
+```
+
+**Every verb prints its plan and changes nothing; `now` carries it out.** Each step says whether it is outward -
+writing to GitHub or to the fork. `import FORK` adopts an existing fork: its upstream is its GitHub parent (or
+`--upstream`, a URL for one off GitHub), its tracking branch the fork's default; in branch mode it makes the patch
+branch from tracking with `.rhizoid/module.toml` and pushes it (a patch branch already on the fork is adopted), in
+integration mode it needs the `[[integration]]` edge and pushes nothing; it records the cutting in the graph. `add
+SOURCE` forks SOURCE on GitHub into `--org` or `fork_org`, then does what import does. `update MODULE`
+fast-forwards tracking - GitHub's merge-upstream when the upstream is the fork's GitHub parent, else a fetch from the
+upstream and a push that must be a fast-forward (a tracking branch changed by hand is refused) - and merges tracking
+into the patch branch in a fresh worktree (a conflict stops it, nothing pushed). `refresh` reads each fork against
+GitHub and changes nothing. `remove MODULE` takes the cutting out of the graph; the fork stays on GitHub - deleting a
+repository is a person's act.
+
+GitHub is asked only through gh, signed in as the person (rhizoid keeps no token). The fork's clone is where the graph
+says (`[clones]`, else `ROOT/owner/repo`); branch mode needs it, integration mode does not. In the clone, the fork is
+the remote whose URL is `github.com/OWNER/REPO` - not `origin` by name: a clone whose `origin` is the upstream and
+whose fork is another remote is fetched and pushed through that one. merge-upstream is asked only when the fork has
+nothing its GitHub parent lacks (so it can only fast-forward), and a plan whose record would contradict the graph is
+blocked before any step.
 
 Install at a release: the x86_64 Linux binary is attached to every release, with its sha256 beside it
 (`.github/workflows/assets.yml`):

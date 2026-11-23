@@ -8,12 +8,20 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::ModuleOrigin;
+/// How a module's fork came to be managed by Rhizoid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModuleOrigin {
+    /// Forked by `rhizoid add`.
+    Created,
+    /// Adopted by `rhizoid import`, from a fork that already existed.
+    Imported,
+}
 
 /// The state recorded inside a managed fork, at `.rhizoid/module.toml`.
 ///
-/// Unlike [`crate::manifest::ModuleEntry`] (the workspace's record of
-/// *intent*), this is the fork's own record of *fact*: exactly where it came
+/// Beside the graph's `[[fork]]` edge (the workspace's record of the cutting), this is the fork's own
+/// record of *fact*, on its patch branch: exactly where it came
 /// from and what it was last synced to, written by the fork itself, not by
 /// whatever happens to be consuming it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -34,8 +42,7 @@ pub struct ModuleMetadata {
     pub attached_on: String,
 }
 
-/// This file's own JSON Schema, for the same editor-tooling reasons as the
-/// top-level manifest's.
+/// This file's own JSON Schema, for editor tooling.
 pub fn json_schema() -> schemars::schema::RootSchema {
     schemars::schema_for!(ModuleMetadata)
 }

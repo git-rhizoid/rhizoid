@@ -124,6 +124,9 @@ pub struct Graph {
     /// Forks whose tracking branch should be their upstream's head.
     #[serde(default, rename = "fork")]
     pub forks: Vec<Fork>,
+    /// The GitHub org or user a new cutting is forked into when `add` names none.
+    #[serde(default)]
+    pub fork_org: Option<String>,
     /// Repositories whose branches are assembled into tags: their names, topics, and what assemble made.
     #[serde(default, rename = "integration")]
     pub integrations: Vec<crate::integration::Integration>,
@@ -142,6 +145,14 @@ impl Graph {
                 return Err(format!(
                     "the clone of {repo} is at `{path}`: a folder under the root, no `..`"
                 ));
+            }
+        }
+        for f in &graph.forks {
+            if let Some(a) = f.added.as_deref().filter(|a| *a != "add" && *a != "import") {
+                return Err(format!("fork {}: added is \"add\" or \"import\", not {a:?}", f.fork));
+            }
+            if f.patches.as_deref() == Some("") {
+                return Err(format!("fork {}: patches names a branch, or \"integration\"", f.fork));
             }
         }
         Ok(graph)
@@ -325,6 +336,13 @@ pub struct Fork {
     pub upstream: Remote,
     /// The upstream's branch (its HEAD when none).
     pub upstream_branch: Option<String>,
+    /// For a cutting, where its changes live: one branch (`rhizoid/patch` when the cutting names none) or
+    /// `"integration"`, the topic branches the repository's `[[integration]]` edge assembles.
+    #[serde(default)]
+    pub patches: Option<String>,
+    /// For a cutting, how it came to rhizoid: `"add"` (forked by rhizoid) or `"import"` (a fork adopted).
+    #[serde(default)]
+    pub added: Option<String>,
 }
 
 /// A git revision as the graph names it (`origin/main`): something `git rev-parse` reads, never an option.

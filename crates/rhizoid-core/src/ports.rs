@@ -23,6 +23,12 @@ pub trait GitHubPort {
 
     /// Whether `full_name` (`owner/repo`) exists and is reachable.
     fn repo_exists(&self, full_name: &str) -> Result<bool, PortError>;
+
+    /// The repository `full_name` was forked from on GitHub (`owner/repo`); `None` when it is no GitHub fork.
+    fn parent(&self, full_name: &str) -> Result<Option<String>, PortError>;
+
+    /// The branch `full_name` names as its default.
+    fn default_branch(&self, full_name: &str) -> Result<String, PortError>;
 }
 
 /// What Rhizoid needs from one local clone, as git's own work: rhizoid drives the git CLI for it
@@ -129,6 +135,18 @@ pub trait GitPort {
 
     /// The URL of the remote `name`; `None` when the clone has no such remote.
     fn remote_url(&self, name: &str) -> Result<Option<String>, PortError>;
+
+    /// Fetch `remote`'s (a remote's name or a URL) branch `branch`; the commit it is at.
+    fn fetch_ref(&self, remote: &str, branch: &str) -> Result<String, PortError>;
+
+    /// Push the commit `commit` to `remote`'s branch `branch`, never forced (a branch that moved elsewhere refuses).
+    fn push_ref(&self, commit: &str, remote: &str, branch: &str) -> Result<(), PortError>;
+
+    /// The clone's remotes, each with its fetch URL.
+    fn remotes(&self) -> Result<Vec<(String, String)>, PortError>;
+
+    /// Whether `a` is an ancestor of `b` (or the same commit).
+    fn is_ancestor(&self, a: &str, b: &str) -> Result<bool, PortError>;
 
     /// Delete the local branch `name` (`git branch -D`).
     fn delete_branch(&self, name: &str) -> Result<(), PortError>;

@@ -19,71 +19,6 @@ fn tempdir() -> std::path::PathBuf {
 }
 
 #[test]
-fn init_writes_a_manifest_with_the_schema_directive() {
-    let dir = tempdir();
-    let out = Command::new(bin()).arg("init").current_dir(&dir).output().unwrap();
-    assert!(out.status.success(), "{:?}", out);
-    let text = std::fs::read_to_string(dir.join("rhizoid.toml")).unwrap();
-    assert!(text.starts_with("#:schema "));
-    assert!(text.contains("[defaults]"));
-}
-
-#[test]
-fn init_twice_without_force_fails_and_does_not_overwrite() {
-    let dir = tempdir();
-    Command::new(bin()).args(["init", "--org", "first-org"]).current_dir(&dir).output().unwrap();
-    let out = Command::new(bin()).arg("init").current_dir(&dir).output().unwrap();
-    assert!(!out.status.success());
-    let text = std::fs::read_to_string(dir.join("rhizoid.toml")).unwrap();
-    assert!(text.contains("first-org"), "existing manifest must be untouched");
-}
-
-#[test]
-fn init_with_force_overwrites() {
-    let dir = tempdir();
-    Command::new(bin()).args(["init", "--org", "first-org"]).current_dir(&dir).output().unwrap();
-    let out = Command::new(bin())
-        .args(["init", "--org", "second-org", "--force"])
-        .current_dir(&dir)
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let text = std::fs::read_to_string(dir.join("rhizoid.toml")).unwrap();
-    assert!(text.contains("second-org"));
-}
-
-#[test]
-fn add_without_a_positional_fails_before_touching_anything() {
-    let dir = tempdir();
-    let out = Command::new(bin()).arg("add").current_dir(&dir).output().unwrap();
-    assert!(!out.status.success());
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("missing <source>"));
-}
-
-#[test]
-fn add_reports_not_implemented_rather_than_silently_succeeding() {
-    let dir = tempdir();
-    let out = Command::new(bin())
-        .args(["add", "octocat/hello-world"])
-        .current_dir(&dir)
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not implemented yet"));
-}
-
-#[test]
-fn remove_reports_a_clear_error_for_an_unknown_module() {
-    let dir = tempdir();
-    Command::new(bin()).arg("init").current_dir(&dir).output().unwrap();
-    let out =
-        Command::new(bin()).args(["remove", "does-not-exist"]).current_dir(&dir).output().unwrap();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("no module named"));
-}
-
-#[test]
 fn unknown_command_exits_with_status_2_and_names_it() {
     let out = Command::new(bin()).arg("bogus-command").output().unwrap();
     assert_eq!(out.status.code(), Some(2));
@@ -114,7 +49,7 @@ fn the_short_version_flag_works_as_it_did() {
 #[test]
 fn a_flag_it_does_not_know_ends_2_and_writes_nothing() {
     let dir = tempdir();
-    let out = Command::new(bin()).args(["init", "--bogus"]).current_dir(&dir).output().unwrap();
+    let out = Command::new(bin()).args(["status", "--bogus"]).current_dir(&dir).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(!dir.join("rhizoid.toml").exists());
 }
