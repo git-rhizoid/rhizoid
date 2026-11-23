@@ -4,6 +4,7 @@
 
 pub mod assemble;
 pub mod finding;
+pub mod follow;
 pub mod graph;
 pub mod integration;
 pub mod manifest;

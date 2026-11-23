@@ -241,6 +241,16 @@ impl GitPort for GitCli {
         .map(drop)
     }
 
+    fn show(&self, rev: &str, path: &str) -> Result<Option<Vec<u8>>, PortError> {
+        let out = self.run(&self.repo, &["show", &format!("{rev}:{path}")])?;
+        Ok(out.status.success().then_some(out.stdout))
+    }
+
+    fn remote_url(&self, name: &str) -> Result<Option<String>, PortError> {
+        let out = self.run(&self.repo, &["remote", "get-url", name])?;
+        Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+    }
+
     fn delete_branch(&self, name: &str) -> Result<(), PortError> {
         self.ok(&["branch", "-q", "-D", name]).map(drop)
     }

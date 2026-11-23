@@ -6,10 +6,10 @@ pinned, patchable without waiting on an upstream PR, and able to send clean patc
 when you want to. See [`git-rhizoid/git-rhizoid.github.io`](https://github.com/git-rhizoid/git-rhizoid.github.io)
 for the design log and current status.
 
-**Status: `rhizoid status`, `assemble`, `send-back` and `bump` work** - status is the first step of the follow tool for every edge a
+**Status: `rhizoid status`, `assemble`, `send-back`, `bump` and `follow` work** - status is the first step of the follow tool for every edge a
 repository has (a slice, a tool pin, a fork, an integration); assemble merges a named list of branches onto a base into
 a tag, in any repository; send-back drafts the next series version of a branch for its upstream; bump lists every pin in one place and bumps
-tool pins on branches; `add`, `import`, `update` and
+tool pins on branches; follow lays a slice as idealkb's follow.sh does; `add`, `import`, `update` and
 `refresh` wait for the GitHub adapter. The rest of the repo is
 the devenv and CI/release scaffolding (from [rustnix](https://github.com/grenudi/rustnix)).
 
@@ -271,6 +271,28 @@ Its report is `pin.N.follower`, `pin.N.kind` (`tool` or `slice`), `pin.N.name`, 
 `pin.N.moved_by` - or the same as JSON. With `now` it ends 0 when every tool pin is current or bumped, 1 when one
 was gated out or refused, 2 when it could not run. What installs a bumped pin on a machine (`lpoco-host follow` for
 `lab.toml`'s `lpoco`) is the follower's, not rhizoid's.
+
+## rhizoid follow
+
+```
+rhizoid follow --source DIR BASE VERSION
+```
+
+Lays release `vVERSION` of a source (a clone at `--source`) into a base, exactly as ideal-knowledge-base's
+`bin/follow.sh` does - the same lines printed, the same files written, the same exit (0; 3 when the base had changed
+a generic file, the diff the signal to send it upstream; 2 when it could not run): the files the source's `generic`
+list names, as that release has them (`#! from = DIR/` serves them from a folder, laid at the base's root); the part
+of a file between its `MARKER:begin` and `MARKER:end` lines (`#! marker =`, default `idealkb`); the files the pin
+names as `own` left as they are, with `diff -u` of what the release changed in them; the pin file (`#! pin =`, default
+`idealkb.toml`) moved to the release, its `source` kept, or made. The shell's ways are kept too: texts compared
+without their trailing newlines, `generic` lines split on whitespace, and a listed file the release lacks ending it
+there with git's 128.
+
+`crates/rhizoid-cli/tests/follow_agrees.rs` proves it against the shell: with `RHIZOID_IDEALKB=DIR` (a clone of
+ideal-knowledge-base) it lays each scenario with `follow.sh` and with `rhizoid follow` and compares what each said,
+how each ended and the trees they left, byte for byte, then runs idealkb's own `bin/test-follow.sh` with its
+`follow.sh` handing over to rhizoid. `check-one-owner.sh`, `slice-changed.sh` and `followers-answer.sh` stay
+idealkb's; the last calls `follow.sh`, so it keeps working whichever lays the files.
 
 Install at a release: the x86_64 Linux binary is attached to every release, with its sha256 beside it
 (`.github/workflows/assets.yml`):

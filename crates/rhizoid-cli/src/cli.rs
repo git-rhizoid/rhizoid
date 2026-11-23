@@ -13,6 +13,7 @@
 //!   rhizoid assemble --done TAG [--repo DIR] [--force]  end a tag's worktree
 //!   rhizoid send-back BRANCH --onto REF --out DIR [--config FILE] [--tested SHA] [--fork ID] [--repo DIR] [--json]
 //!   rhizoid bump [now] [--graph FILE] [--root DIR] [--only REPO] [--fetch] [--push] [--pr] [--json]   every pin in one place; now bumps
+//!   rhizoid follow --source DIR BASE VERSION    lay a release of a source into a base, as idealkb's follow.sh does
 //!   rhizoid completions SHELL | man | --version | --help
 //! ```
 
@@ -32,6 +33,7 @@ pub enum Command {
     #[serde(rename = "send-back")]
     SendBack,
     Bump,
+    Follow,
     Completions,
     Man,
 }
@@ -48,6 +50,7 @@ impl Command {
         "assemble",
         "send-back",
         "bump",
+        "follow",
         "completions",
         "man",
     ];
@@ -69,6 +72,7 @@ impl FromRaw for Command {
             "assemble" => Command::Assemble,
             "send-back" => Command::SendBack,
             "bump" => Command::Bump,
+            "follow" => Command::Follow,
             "completions" => Command::Completions,
             "man" => Command::Man,
             _ => return None,
@@ -338,6 +342,33 @@ contract! {
         subcommands: &[Command::Bump],
         arg: Some(Arg::long("pr")),
         summary: "Push each bump's branch and open its pull request (gh pr create --fill).",
+        ..Input::EMPTY
+    };
+
+    SOURCE: String, Command = Input {
+        key: "source",
+        ty: Type::String,
+        subcommands: &[Command::Follow],
+        arg: Some(Arg { value_name: "DIR", ..Arg::long("source") }),
+        summary: "A clone of the source that holds the tag vVERSION.",
+        ..Input::EMPTY
+    };
+
+    FOLLOW_BASE: String, Command = Input {
+        key: "follow_base",
+        ty: Type::String,
+        subcommands: &[Command::Follow],
+        arg: Some(Arg { value_name: "BASE", ..Arg::positional(0) }),
+        summary: "The base to lay the release into.",
+        ..Input::EMPTY
+    };
+
+    FOLLOW_VERSION: String, Command = Input {
+        key: "follow_version",
+        ty: Type::String,
+        subcommands: &[Command::Follow],
+        arg: Some(Arg { value_name: "VERSION", ..Arg::positional(1) }),
+        summary: "The release to lay (its tag is vVERSION).",
         ..Input::EMPTY
     };
 
