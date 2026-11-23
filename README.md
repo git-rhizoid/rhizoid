@@ -6,8 +6,8 @@ pinned, patchable without waiting on an upstream PR, and able to send clean patc
 when you want to. See [`git-rhizoid/git-rhizoid.github.io`](https://github.com/git-rhizoid/git-rhizoid.github.io)
 for the design log and current status.
 
-**Status: `rhizoid status` works** - the first step of the follow tool for every edge a repository has
-(a slice, a tool pin, a fork); `add`, `import`, `update` and `refresh` wait for the GitHub adapter. The rest
+**Status: `rhizoid status` and `rhizoid assemble` work** - status is the first step of the follow tool for every edge a
+repository has (a slice, a tool pin, a fork); assemble builds a test kernel's integration from a list of branches; `add`, `import`, `update` and `refresh` wait for the GitHub adapter. The rest
 of the repo is the devenv and CI/release scaffolding (from [rustnix](https://github.com/grenudi/rustnix)).
 
 ## rhizoid status
@@ -29,6 +29,72 @@ as lines. Where it answers differently from the shell on purpose: a file named i
 `moved-by-hand` and not behind, a pin file that is not what it should be stops the report. The old `status`, which
 listed the modules of `rhizoid.toml` and said drift was unknown, is gone: a cutting returns as an edge of the graph
 when cuttings are built (step 4 of the order).
+
+## rhizoid assemble
+
+```
+rhizoid assemble LIST [--lists FILE] [--repo DIR] [--worktree DIR] [--reproduces COMMIT] [--fetch] [--json]
+```
+
+Merges one named list of branches, in order, onto its base in a fresh worktree, and tags the result
+`int/DEVICE/LIST/BASE/N` - the integration a test kernel is built from. Run in the kernel clone (or `--repo`), with
+the lab's list file (`--lists`, `RHIZOID_LISTS`, else `kernel/topics.toml` here).
+
+**The list file** is rhizoid's format; each lab owns its own. [`examples/topics.toml`](examples/topics.toml) is one:
+
+```toml
+device = "walleye"
+
+[lists.ufs-off]                     # named lists: one tag each
+base = "v6.18"                      # a tag, or a fork's commit
+
+[[lists.ufs-off.entries]]           # merged in this order
+branch = "topic/panel-s6e3fa7"      # topic/ITEM or backport/ITEM/BASE
+for = "the display panel"           # what it is for
+state = "known-good"                # known-good (with test_run and tested_commit) or trying
+test_run = "2026-11-20-walleye-display"
+tested_commit = "29d92793b"
+```
+
+A branch is the local one, else `origin`'s. The device, the list name and the base must each fit in one part of a tag
+name; anything else in the file is refused before anything is made.
+
+**What it does**, in order: reads the base, every branch and the `--reproduces` commit, and stops if one is missing;
+numbers the tag one past the highest `int/DEVICE/LIST/BASE/N`; makes a fresh worktree, detached at the base, in
+`${AGENT_WORKTREES:-~/.local/share/agent-worktrees}/REPO/rhizoid/` (`DEVICE-LIST-BASE-N`, or `--worktree`, which must be
+inside that folder - anywhere else is refused) and locks it with `git worktree lock --reason`, so several assembled
+worktrees stay alive until someone unlocks and removes one; turns on the clone's shared rerere memory
+(`rerere.enabled`, `rerere.autoUpdate` in its config); merges each branch with `git merge --no-ff`. A conflict rerere
+has a recorded resolution for is resolved and noted (`entry.N.rerere=resolved`). Any other conflict stops the run:
+it names the entry and the earlier entries that changed the same paths, and leaves the worktree mid-merge. Resolve
+it there and commit, and rerere remembers the resolution, so the next run gets through. When every branch is merged,
+it writes an annotated tag whose message carries the recipe: the base and its sha, and every entry with its sha.
+`--reproduces COMMIT` then compares the tag's tree with the commit's and says `equal`, or lists the paths that differ.
+`--fetch` first fetches every remote, pruning branches they no longer have.
+
+**Its report** is `key=value` lines, or the same as JSON with `--json`; a field added later is a new key:
+
+```
+device=walleye
+list=ufs-off
+base=v6.18
+base_sha=...
+entry.1.branch=topic/panel-s6e3fa7
+entry.1.sha=...
+entry.1.for=the display panel
+entry.1.state=known-good
+entry.1.test_run=2026-11-20-walleye-display
+entry.1.tested_commit=29d92793b
+worktree=/home/you/.local/share/agent-worktrees/linux/rhizoid/walleye-ufs-off-v6.18-1
+tag=int/walleye/ufs-off/v6.18/1
+tag_sha=...
+commit=...
+```
+
+At a conflict: `conflict.entry`, `conflict.with` (space-separated) and `conflict.path.N`, and no tag. With
+`--reproduces`: `reproduces.commit`, `reproduces=equal|differs` and `reproduces.path.N`. It ends 0 when tagged and
+equal, 1 at a conflict or a difference, 2 when it could not run. rhizoid knows nothing of a lab's records: a caller
+reads the report and keeps its own record checks.
 
 Install at a release: `cargo install --git https://github.com/git-rhizoid/rhizoid --tag vX.Y.Z rhizoid-cli`.
 
