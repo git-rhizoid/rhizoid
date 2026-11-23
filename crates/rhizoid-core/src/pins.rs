@@ -227,13 +227,26 @@ pub fn copies(
     let plain = |p: &str| p.strip_prefix("./").unwrap_or(p).to_string();
     let (pin, also): (String, Vec<String>) =
         (plain(&t.pin), t.also.iter().map(|a| plain(a)).collect());
-    Ok(repos
+    let hits: Vec<(String, u64)> = repos
         .grep(follower, rev, &tag)?
         .into_iter()
         .filter(|(path, _, text)| *path != pin && !also.contains(path) && names_tag(text, &tag))
-        .map(|(path, line, _)| format!("{path}:{line}"))
+        .map(|(path, line, _)| (path, line))
+        .collect();
+    // a file the follower marks as a record (history that names a version) is no second pin
+    let mut files: Vec<String> = hits.iter().map(|(p, _)| p.clone()).collect();
+    files.dedup();
+    let records = repos.marked(follower, rev, RECORDS, &files)?;
+    Ok(hits
+        .into_iter()
+        .filter(|(path, _)| !records.contains(path))
+        .map(|(path, line)| format!("{path}:{line}"))
         .collect())
 }
+
+/// The git attribute a follower sets in its own .gitattributes on the files that are records, not config: history
+/// that names a version (`data/** rhizoid-records`). pin-copies never counts them.
+pub const RECORDS: &str = "rhizoid-records";
 
 /// Whether `text` names the tag `tag` itself, not a longer one that starts or ends with it: `lpoco-v0.17.1` is not
 /// in `lpoco-v0.17.10`, `lpoco-v0.17.1-cut.2`, `lpoco-v0.17.1.1` or `xlpoco-v0.17.1`.

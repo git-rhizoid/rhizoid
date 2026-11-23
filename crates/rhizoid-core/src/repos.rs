@@ -74,6 +74,16 @@ pub trait Repos {
         text: &str,
     ) -> Result<Vec<(String, u64, String)>, RepoError>;
 
+    /// Which of `paths` the clone of `repo` marks at `rev` with the git attribute `attr` (set, or given a value
+    /// other than `false`), as its own .gitattributes say.
+    fn marked(
+        &self,
+        repo: &RepoName,
+        rev: &str,
+        attr: &str,
+        paths: &[String],
+    ) -> Result<std::collections::BTreeSet<String>, RepoError>;
+
     /// What reading found about the clones themselves, beside the edges: a tag `origin` moved that the clone
     /// holds as it was (`moved-by-hand`, `tag-origin`). Ask it after the reads; none by default.
     fn fetch_findings(&self) -> Vec<crate::Finding> {

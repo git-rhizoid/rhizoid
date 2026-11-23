@@ -252,7 +252,10 @@ changes nothing (it ends 1 when one is behind). With `now`, it moves only the pi
 job's pin is listed and left, and its exit says only how its own pins stand. A tool pin whose tag name (its prefix and the release it pins) is
 also written in the follower outside its pin file and its `also` files is `refused`, each copy named
 (`pin.N.copies`, `FILE:LINE`): bump never moves one copy of several, and status says the same as `pin-copies`
-(`moved-by-hand`; `current` when the pin file holds the only copy). Each tool pin of its own that is behind is bumped in its follower's clone: a branch `rhizoid/bump/TOOL-VERSION` from the
+(`moved-by-hand`; `current` when the pin file holds the only copy). A file the follower marks as a record in its own
+`.gitattributes` - history that names a version, not config (`data/** rhizoid-records`) - is never a copy; the
+attribute is read at the graph's revision (`git check-attr --source`, git 2.40 or newer; the clone's
+`info/attributes` counts too, a global attributes file does not), so no list lives in rhizoid or the graph. Each tool pin of its own that is behind is bumped in its follower's clone: a branch `rhizoid/bump/TOOL-VERSION` from the
 graph's revision, in a fresh worktree; only the pinned value edited, the rest of the file as it was, and the edit read
 back before it is committed (a value that appears twice, or does not read back, is `refused`, left to a hand); the
 tool's `gate`, when it has one, passed before the commit (`gated-out` commits nothing); `--push` pushes the branch to
